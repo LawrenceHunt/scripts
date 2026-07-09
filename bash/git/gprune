@@ -1,0 +1,183 @@
+#!/usr/bin/env bash
+#
+# gprune — prune local git branches whose upstream remote branch is gone.
+#
+# Fetches with --prune to refresh remote-tracking refs, finds local branches
+# whose upstream has been deleted on the remote, lists them with detail, and
+# prompts before deleting.
+#
+set -euo pipefail
+
+# --- resolve real path (run via symlink) and load shared helpers ------------
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+REAL_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+# shellcheck source=../lib/common.sh
+source "$REAL_DIR/../lib/common.sh"
+
+usage() {
+  cat <<EOF
+${C_BOLD}gprune${C_RESET} — prune local branches whose remote was deleted
+
+${C_BOLD}Usage:${C_RESET}
+  gprune [options]
+
+${C_BOLD}Options:${C_RESET}
+  -n, --dry-run    List stale branches but never delete
+  -y, --yes        Delete all stale branches without prompting (still skips current)
+  -h, --help       Show this help
+
+${C_BOLD}What counts as "stale":${C_RESET}
+  A local branch that tracks an upstream which no longer exists on the remote
+  (git reports it as ${C_DIM}[gone]${C_RESET} after a prune-fetch).
+EOF
+}
+
+DRY_RUN=false
+ASSUME_YES=false
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -n|--dry-run) DRY_RUN=true ;;
+    -y|--yes)     ASSUME_YES=true ;;
+    -h|--help)    usage; exit 0 ;;
+    *) error "Unknown option: $1"; usage >&2; exit 2 ;;
+  esac
+  shift
+done
+
+require_cmd git
+
+# --- sanity: inside a work tree ---------------------------------------------
+git rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+  || die "Not inside a git repository."
+
+REPO_NAME="$(basename "$(git rev-parse --show-toplevel)")"
+CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+
+heading "gprune · $REPO_NAME" "🌿"
+info "Current branch: ${C_BOLD}${CURRENT_BRANCH}${C_RESET}"
+
+# --- refresh remote-tracking refs -------------------------------------------
+if git remote | grep -q .; then
+  run_with_spinner "Fetching and pruning deleted remote branches…" \
+    git fetch --all --prune --quiet \
+    || die "git fetch failed — check your network or remote configuration."
+else
+  warn "No remotes configured; using existing tracking information only."
+fi
+
+# --- collect stale branches -------------------------------------------------
+# Format: "<branch>\t<upstream>\t<track>" ; a gone upstream shows "[gone]".
+declare -a STALE=()
+declare -a STALE_UPSTREAM=()
+
+while IFS=$'\t' read -r branch upstream track; do
+  [[ -z "$branch" ]] && continue
+  if [[ "$track" == *"[gone]"* ]]; then
+    STALE+=("$branch")
+    STALE_UPSTREAM+=("$upstream")
+  fi
+done < <(git for-each-ref \
+           --format='%(refname:short)%09%(upstream:short)%09%(upstream:track)' \
+           refs/heads)
+
+TOTAL_LOCAL="$(git for-each-ref refs/heads | wc -l | tr -d ' ')"
+COUNT=${#STALE[@]}
+
+stat "local branches" "$TOTAL_LOCAL"
+stat "stale (remote deleted)" "$COUNT"
+
+if [[ $COUNT -eq 0 ]]; then
+  success "Nothing to prune — every tracked branch still has its remote. 🎉"
+  exit 0
+fi
+
+# --- list them with detail --------------------------------------------------
+heading "Stale branches" "🗂️"
+for i in "${!STALE[@]}"; do
+  branch="${STALE[$i]}"
+  upstream="${STALE_UPSTREAM[$i]}"
+  # last commit info for context (tab-separated so multi-word fields stay intact)
+  IFS=$'\t' read -r sha reldate subject < <(
+    git log -1 --format='%h%x09%cr%x09%s' "$branch" 2>/dev/null || printf '?\t?\t?'
+  )
+  marker="  "
+  [[ "$branch" == "$CURRENT_BRANCH" ]] && marker="${C_YELLOW}*${C_RESET} "
+  printf '%s%s%-30s%s %sgone:%s %s\n' \
+    "$marker" "$C_BOLD" "$branch" "$C_RESET" "$C_DIM" "$C_RESET" "${upstream:-<none>}"
+  printf '     %s%s · %s · %s%s\n' "$C_DIM" "$sha" "$reldate" "$subject" "$C_RESET"
+done
+
+if $DRY_RUN; then
+  echo
+  info "Dry run — no branches deleted." "🧪"
+  exit 0
+fi
+
+# --- decide what to delete --------------------------------------------------
+declare -a TO_DELETE=()
+
+if $ASSUME_YES; then
+  TO_DELETE=("${STALE[@]}")
+else
+  echo
+  action="$(choose "Delete these branches?" "asn")"
+  case "$action" in
+    a) TO_DELETE=("${STALE[@]}"); info "Selected: all $COUNT branches." ;;
+    n) info "No branches selected — nothing deleted."; exit 0 ;;
+    s)
+      heading "Select branches to delete" "🔎"
+      for branch in "${STALE[@]}"; do
+        if confirm "Delete ${C_BOLD}${branch}${C_RESET}?" n; then
+          TO_DELETE+=("$branch")
+        fi
+      done
+      ;;
+  esac
+fi
+
+if [[ ${#TO_DELETE[@]} -eq 0 ]]; then
+  info "Nothing selected — nothing deleted."
+  exit 0
+fi
+
+# --- delete -----------------------------------------------------------------
+heading "Deleting ${#TO_DELETE[@]} branch(es)" "🗑️"
+deleted=0
+skipped=0
+for branch in "${TO_DELETE[@]}"; do
+  if [[ "$branch" == "$CURRENT_BRANCH" ]]; then
+    warn "Skipping '$branch' — it is the current branch. Switch away first."
+    ((skipped++)) || true
+    continue
+  fi
+
+  # Try a safe delete first; fall back to force with explicit consent.
+  if git branch -d "$branch" >/dev/null 2>&1; then
+    success "Deleted ${C_BOLD}${branch}${C_RESET}"
+    ((deleted++)) || true
+  else
+    warn "'$branch' has unmerged commits that exist nowhere else."
+    if confirm "  Force-delete ${C_BOLD}${branch}${C_RESET} and lose those commits?" n; then
+      if git branch -D "$branch" >/dev/null 2>&1; then
+        success "Force-deleted ${C_BOLD}${branch}${C_RESET}" "🗑️"
+        ((deleted++)) || true
+      else
+        error "Failed to delete '$branch'."
+        ((skipped++)) || true
+      fi
+    else
+      info "Kept '$branch'."
+      ((skipped++)) || true
+    fi
+  fi
+done
+
+echo
+stat "deleted" "$deleted"
+[[ $skipped -gt 0 ]] && stat "kept/skipped" "$skipped"
+success "Done." "🎉"
