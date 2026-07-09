@@ -82,4 +82,16 @@ case ":$PATH:" in
     ;;
 esac
 
+# --- optional enhancement: gum ----------------------------------------------
+if command -v gum >/dev/null 2>&1; then
+  success "gum detected — interactive prompts will use the enhanced UI. ✨"
+else
+  warn "gum not found (optional). Tools work without it, but menus/spinners are nicer with it."
+  if command -v brew >/dev/null 2>&1; then
+    printf '   Install with: %sbrew install gum%s\n' "$C_CYAN" "$C_RESET"
+  else
+    printf '   See: %shttps://github.com/charmbracelet/gum%s\n' "$C_CYAN" "$C_RESET"
+  fi
+fi
+
 success "Installation complete. 🎉"

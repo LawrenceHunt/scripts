@@ -19,6 +19,34 @@ REAL_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 # shellcheck source=../lib/common.sh
 source "$REAL_DIR/../lib/common.sh"
 
+# detect_base_ref — the integration branch to test merges against.
+# Prefers the remote's default branch (origin/HEAD), then common fallbacks.
+detect_base_ref() {
+  local ref c
+  if ref="$(git symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null)"; then
+    printf '%s' "${ref#refs/remotes/}"
+    return 0
+  fi
+  for c in origin/main origin/master main master; do
+    if git rev-parse --verify --quiet "$c" >/dev/null 2>&1; then
+      printf '%s' "$c"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# is_squash_merged BRANCH BASE — true if BRANCH's combined diff already exists in
+# BASE as a single patch (i.e. it was squash- or rebase-merged, so the individual
+# commit SHAs differ but no actual change would be lost).
+is_squash_merged() {
+  local branch="$1" base="$2" mb tree dangling
+  mb="$(git merge-base "$base" "$branch" 2>/dev/null)" || return 1
+  tree="$(git rev-parse "$branch^{tree}" 2>/dev/null)" || return 1
+  dangling="$(git commit-tree "$tree" -p "$mb" -m _ 2>/dev/null)" || return 1
+  [[ "$(git cherry "$base" "$dangling" 2>/dev/null)" == "-"* ]]
+}
+
 usage() {
   cat <<EOF
 ${C_BOLD}gprune${C_RESET} — prune local branches whose remote was deleted
@@ -125,18 +153,21 @@ if $ASSUME_YES; then
   TO_DELETE=("${STALE[@]}")
 else
   echo
-  action="$(choose "Delete these branches?" "asn")"
-  case "$action" in
-    a) TO_DELETE=("${STALE[@]}"); info "Selected: all $COUNT branches." ;;
-    n) info "No branches selected — nothing deleted."; exit 0 ;;
-    s)
+  menu "Delete these branches?" \
+    "Delete all $COUNT stale branch(es)" \
+    "Select individually" \
+    "Cancel — delete nothing"
+  case "$MENU_INDEX" in
+    0) TO_DELETE=("${STALE[@]}"); info "Selected: all $COUNT branch(es)." ;;
+    1)
       heading "Select branches to delete" "🔎"
       for branch in "${STALE[@]}"; do
-        if confirm "Delete ${C_BOLD}${branch}${C_RESET}?" n; then
+        if confirm "Delete ${branch}?" n; then
           TO_DELETE+=("$branch")
         fi
       done
       ;;
+    *) info "Cancelled — nothing deleted."; exit 0 ;;
   esac
 fi
 
@@ -147,6 +178,7 @@ fi
 
 # --- delete -----------------------------------------------------------------
 heading "Deleting ${#TO_DELETE[@]} branch(es)" "🗑️"
+BASE_REF="$(detect_base_ref || true)"
 deleted=0
 skipped=0
 for branch in "${TO_DELETE[@]}"; do
@@ -161,18 +193,59 @@ for branch in "${TO_DELETE[@]}"; do
     success "Deleted ${C_BOLD}${branch}${C_RESET}"
     ((deleted++)) || true
   else
-    warn "'$branch' has unmerged commits that exist nowhere else."
-    if confirm "  Force-delete ${C_BOLD}${branch}${C_RESET} and lose those commits?" n; then
+    # 'git branch -d' refuses when the branch isn't merged into local HEAD/upstream.
+    # That is NOT the same as data loss: the real question is whether any commit is
+    # reachable from no other ref. Compute the genuinely-orphaned commits.
+    unique="$(git log --format='%h%x09%cr%x09%an%x09%s' \
+                "$branch" --not --exclude="refs/heads/$branch" --all 2>/dev/null || true)"
+    n_unique="$(printf '%s' "$unique" | grep -c . || true)"
+
+    if [[ "$n_unique" -eq 0 ]]; then
+      # Every commit lives on another ref (typically origin/main after fetch) —
+      # not merged into local HEAD, but safe to remove with nothing lost.
       if git branch -D "$branch" >/dev/null 2>&1; then
-        success "Force-deleted ${C_BOLD}${branch}${C_RESET}" "🗑️"
+        success "Deleted ${C_BOLD}${branch}${C_RESET} ${C_DIM}(already merged on another ref)${C_RESET}"
+        ((deleted++)) || true
+      else
+        error "Failed to delete '$branch'."
+        ((skipped++)) || true
+      fi
+    elif [[ -n "$BASE_REF" ]] && is_squash_merged "$branch" "$BASE_REF"; then
+      # SHAs differ from BASE_REF, but the whole diff is already there as one patch:
+      # a squash/rebase merge. The orphaned commit objects carry no unmerged change.
+      if git branch -D "$branch" >/dev/null 2>&1; then
+        success "Deleted ${C_BOLD}${branch}${C_RESET} ${C_DIM}(squash-merged into ${BASE_REF})${C_RESET}"
         ((deleted++)) || true
       else
         error "Failed to delete '$branch'."
         ((skipped++)) || true
       fi
     else
-      info "Kept '$branch'."
-      ((skipped++)) || true
+      warn "'$branch' has ${n_unique} commit(s) not on any other branch${BASE_REF:+ and not squash-merged into $BASE_REF}:"
+      shown=0
+      while IFS=$'\t' read -r sha reldate author subject; do
+        [[ -z "$sha" ]] && continue
+        printf '     %s%s%s  %s%s · %s%s\n' \
+          "$C_YELLOW" "$sha" "$C_RESET" "$C_DIM" "$reldate" "$author" "$C_RESET"
+        printf '       %s%s%s\n' "$C_DIM" "$subject" "$C_RESET"
+        ((shown++)) || true
+        [[ $shown -ge 10 ]] && break
+      done <<< "$unique"
+      [[ $n_unique -gt 10 ]] && dim "     … and $((n_unique - 10)) more commit(s)"
+      dim "     Review with: git log -p $branch --not --exclude=refs/heads/$branch --all"
+
+      if confirm "  Force-delete ${branch} and permanently lose these ${n_unique} commit(s)?" n; then
+        if git branch -D "$branch" >/dev/null 2>&1; then
+          success "Force-deleted ${C_BOLD}${branch}${C_RESET}" "🗑️"
+          ((deleted++)) || true
+        else
+          error "Failed to delete '$branch'."
+          ((skipped++)) || true
+        fi
+      else
+        info "Kept '$branch'."
+        ((skipped++)) || true
+      fi
     fi
   fi
 done

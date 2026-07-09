@@ -69,6 +69,19 @@ Every tool should feel like it belongs to the same family:
 - **Safety** — confirm before anything irreversible; support a way to review before
   acting; exit cleanly (non-zero on error) and leave no partial state.
 
+## Optional dependency: gum
+
+[`gum`](https://github.com/charmbracelet/gum) (Charmbracelet) is a **recommended but
+optional** enhancement. When it's installed, the shared bash helpers use it for
+interactive dropdowns (`menu`), confirmations (`confirm`), and spinners
+(`run_with_spinner`). When it's absent, every helper falls back to a pure-bash
+implementation, so tools must never *require* it. `install.sh` detects it and
+prints the `brew install gum` hint if missing.
+
+Rule of thumb: reach for a CLI library for **interactive** flair (pickers, forms,
+spinners) behind a capability check with a graceful fallback — never make a tool
+hard-fail because a nicety isn't installed.
+
 ## Bash specifics
 
 - Start with `#!/usr/bin/env bash` and `set -euo pipefail`.
