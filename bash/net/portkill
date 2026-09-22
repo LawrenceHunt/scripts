@@ -2,6 +2,8 @@
 #
 # portkill — see what is listening on your ports and shut it down.
 #
+# aliases: pk
+#
 # With no arguments it scans every listening port and offers a dropdown to pick
 # one to kill. With one or more port numbers it reports what holds them and
 # offers to kill just those. Terminates politely (SIGTERM) first and only
@@ -20,6 +22,10 @@ REAL_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 # shellcheck source=../lib/common.sh
 source "$REAL_DIR/../lib/common.sh"
 
+# How the user invoked us — "portkill" or the short alias "pk". Echoed back in
+# help and hints so copy-pasted suggestions match what they actually type.
+PROG="$(basename "${0}")"
+
 # Ports at or above this are almost always app-internal or OS-assigned rather
 # than a server you started deliberately, so they are hidden from the scan
 # unless --all is passed or the port is asked for by number.
@@ -27,12 +33,13 @@ EPHEMERAL_MIN=32768
 
 usage() {
   cat <<EOF
-${C_BOLD}portkill${C_RESET} — inspect listening ports and kill what holds them
+${C_BOLD}${PROG}${C_RESET} — inspect listening ports and kill what holds them
+${C_DIM}(installed as both 'portkill' and the short alias 'pk')${C_RESET}
 
 ${C_BOLD}Usage:${C_RESET}
-  portkill                 Scan all listening ports, pick one from a dropdown
-  portkill 3000            Show what holds port 3000 and offer to kill it
-  portkill 3000 8080 5432  Same, for several ports in turn
+  ${PROG}                 Scan all listening ports, pick one from a dropdown
+  ${PROG} 3000            Show what holds port 3000 and offer to kill it
+  ${PROG} 3000 8080 5432  Same, for several ports in turn
 
 ${C_BOLD}Options:${C_RESET}
   -a, --all        Include high ports (>= ${EPHEMERAL_MIN}) in the scan
@@ -45,7 +52,7 @@ ${C_BOLD}Options:${C_RESET}
 ${C_BOLD}How it kills:${C_RESET}
   SIGTERM first, then waits up to 5s for the process to exit. If it survives,
   you are asked before SIGKILL. ${C_DIM}--force${C_RESET} skips straight to SIGKILL.
-  Ports owned by another user (root daemons, say) need ${C_DIM}sudo portkill <port>${C_RESET}.
+  Ports owned by another user (root daemons, say) need ${C_DIM}sudo ${PROG} <port>${C_RESET}.
 EOF
 }
 
@@ -286,12 +293,12 @@ kill_row() {
     return 1
   fi
   if [[ "$pid" -eq "$$" || "$pid" -eq "${PPID:-0}" ]]; then
-    warn "pid ${pid} is portkill itself (or its parent shell) — refusing."
+    warn "pid ${pid} is ${PROG} itself (or its parent shell) — refusing."
     return 1
   fi
   if [[ "$user" != "$ME" && "$user" != "?" ]]; then
     warn "Owned by '${user}', not you — the signal will likely be refused."
-    dim  "   Retry with: sudo portkill ${port}"
+    dim  "   Retry with: sudo ${PROG} ${port}"
   fi
 
   if ! $ASSUME_YES; then
@@ -306,7 +313,7 @@ kill_row() {
   $FORCE && first_sig=KILL
 
   send_signal "$pid" "$first_sig" "$cmd" || {
-    dim "   Try: sudo portkill ${port}"
+    dim "   Try: sudo ${PROG} ${port}"
     return 1
   }
 
@@ -347,7 +354,7 @@ kill_row() {
 run_for_ports() {
   local port i killed=0 kept=0 empty=0
 
-  heading "portkill · $# port(s)" "🔌"
+  heading "${PROG} · $# port(s)" "🔌"
   info "Checking: ${C_BOLD}$*${C_RESET}"
 
   for port in "$@"; do
@@ -385,7 +392,7 @@ run_for_ports() {
 run_scan() {
   local i labels killed=0
 
-  heading "portkill · listening ports" "🔍"
+  heading "${PROG} · listening ports" "🔍"
   $INCLUDE_UDP && info "Including bound UDP sockets."
 
   while true; do
@@ -426,7 +433,7 @@ run_scan() {
     menu "Which port do you want to kill?" "${labels[@]}"
     if [[ "$MENU_INDEX" -lt 0 || "$MENU_INDEX" -ge ${#ROW_PORT[@]} ]]; then
       if [[ "$MENU_INDEX" -lt 0 ]] && ! _tty_ok; then
-        warn "No terminal available for the dropdown — name a port instead: portkill 3000"
+        warn "No terminal available for the dropdown — name a port instead: ${PROG} 3000"
       else
         info "Cancelled — nothing killed."
       fi

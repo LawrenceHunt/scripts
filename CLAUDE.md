@@ -27,7 +27,7 @@ bash/
   git/
     gprune             # prune local branches whose remote is gone
   net/
-    portkill           # inspect listening ports and kill what holds them
+    portkill           # inspect listening ports and kill what holds them (alias: pk)
 ```
 
 When a new language is introduced, mirror this shape (e.g. `python/lib/`,
@@ -44,7 +44,11 @@ There is a single mechanism. Do not invent per-tool install steps.
    installed.
 3. `./install.sh` scans the language directories for executable tools (skipping
    `lib/`) and symlinks each into `~/.local/bin` by its basename.
-4. `~/.local/bin` is expected to be on `PATH`. `install.sh` checks this and prints
+4. A tool may declare short aliases with a comment line near the top of the
+   file — `# aliases: pk` — and `install.sh` symlinks each alias at the same
+   tool. The tool prints `$(basename "$0")` in its help and hints, so suggested
+   commands match whichever name was typed.
+5. `~/.local/bin` is expected to be on `PATH`. `install.sh` checks this and prints
    the exact line to add to the user's shell profile if it is missing. We use
    `~/.local/bin` (not `/usr/local/bin`) so installation never needs `sudo`.
 

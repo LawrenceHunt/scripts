@@ -6,6 +6,12 @@
 # script), symlinks each into ~/.local/bin by its basename, and checks that
 # ~/.local/bin is on PATH.
 #
+# A tool can declare short aliases with a comment line near the top:
+#
+#   # aliases: pk
+#
+# Each alias gets its own symlink to the same tool.
+#
 set -euo pipefail
 
 REPO_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -33,27 +39,42 @@ mkdir -p "$BIN_DIR"
 installed=0
 skipped=0
 
+# link_one TOOL NAME [NOTE] — symlink one command name at a tool.
+# Returns 0 when a new link was created, 1 when nothing was done.
+link_one() {
+  local tool="$1" name="$2" note="${3:-}" link="$BIN_DIR/$2"
+
+  if [[ -L "$link" && "$(readlink "$link")" == "$tool" ]]; then
+    info "$name ${C_DIM}(already linked)${C_RESET}"
+    return 1
+  fi
+  if [[ -e "$link" && ! -L "$link" ]]; then
+    warn "$name — a real file already exists at $link; leaving it untouched."
+    return 1
+  fi
+
+  ln -sf "$tool" "$link"
+  success "$name → ${C_DIM}${tool#"$REPO_DIR"/}${note}${C_RESET}"
+  return 0
+}
+
 # Executable tools live at <language>/<theme>/<tool>. Skip anything under a
 # lib/ directory and skip files with a dot in the basename (libs keep .sh; tools
 # are extensionless commands).
 while IFS= read -r -d '' tool; do
   name="$(basename "$tool")"
-  link="$BIN_DIR/$name"
 
-  if [[ -L "$link" && "$(readlink "$link")" == "$tool" ]]; then
-    info "$name ${C_DIM}(already linked)${C_RESET}"
-    ((skipped++)) || true
-    continue
-  fi
-  if [[ -e "$link" && ! -L "$link" ]]; then
-    warn "$name — a real file already exists at $link; leaving it untouched."
-    ((skipped++)) || true
-    continue
-  fi
+  if link_one "$tool" "$name"; then ((installed++)) || true; else ((skipped++)) || true; fi
 
-  ln -sf "$tool" "$link"
-  success "$name → ${C_DIM}${tool#"$REPO_DIR"/}${C_RESET}"
-  ((installed++)) || true
+  # Optional short names, declared in the tool as: # aliases: pk foo
+  aliases="$(sed -n 's/^# aliases:[[:space:]]*//p' "$tool" | head -1)"
+  for alias_name in $aliases; do
+    if link_one "$tool" "$alias_name" " (alias of $name)"; then
+      ((installed++)) || true
+    else
+      ((skipped++)) || true
+    fi
+  done
 done < <(
   find "$REPO_DIR" \
     -type d -name lib -prune -o \
