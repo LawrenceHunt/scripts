@@ -26,6 +26,8 @@ bash/
     common.sh          # colours, emojis, spinners, prompts, output helpers
   git/
     gprune             # prune local branches whose remote is gone
+  net/
+    portkill           # inspect listening ports and kill what holds them
 ```
 
 When a new language is introduced, mirror this shape (e.g. `python/lib/`,

@@ -1,0 +1,457 @@
+#!/usr/bin/env bash
+#
+# portkill — see what is listening on your ports and shut it down.
+#
+# With no arguments it scans every listening port and offers a dropdown to pick
+# one to kill. With one or more port numbers it reports what holds them and
+# offers to kill just those. Terminates politely (SIGTERM) first and only
+# escalates to SIGKILL with explicit consent.
+#
+set -euo pipefail
+
+# --- resolve real path (run via symlink) and load shared helpers ------------
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+REAL_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+# shellcheck source=../lib/common.sh
+source "$REAL_DIR/../lib/common.sh"
+
+# Ports at or above this are almost always app-internal or OS-assigned rather
+# than a server you started deliberately, so they are hidden from the scan
+# unless --all is passed or the port is asked for by number.
+EPHEMERAL_MIN=32768
+
+usage() {
+  cat <<EOF
+${C_BOLD}portkill${C_RESET} — inspect listening ports and kill what holds them
+
+${C_BOLD}Usage:${C_RESET}
+  portkill                 Scan all listening ports, pick one from a dropdown
+  portkill 3000            Show what holds port 3000 and offer to kill it
+  portkill 3000 8080 5432  Same, for several ports in turn
+
+${C_BOLD}Options:${C_RESET}
+  -a, --all        Include high ports (>= ${EPHEMERAL_MIN}) in the scan
+  -u, --udp        Include bound UDP sockets as well as TCP listeners
+  -l, --list       List only — never kill anything
+  -y, --yes        Skip confirmation for ports named explicitly on the command line
+  -f, --force      Send SIGKILL immediately instead of SIGTERM first
+  -h, --help       Show this help
+
+${C_BOLD}How it kills:${C_RESET}
+  SIGTERM first, then waits up to 5s for the process to exit. If it survives,
+  you are asked before SIGKILL. ${C_DIM}--force${C_RESET} skips straight to SIGKILL.
+  Ports owned by another user (root daemons, say) need ${C_DIM}sudo portkill <port>${C_RESET}.
+EOF
+}
+
+SHOW_ALL=false
+INCLUDE_UDP=false
+LIST_ONLY=false
+ASSUME_YES=false
+FORCE=false
+PORTS=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -a|--all)   SHOW_ALL=true ;;
+    -u|--udp)   INCLUDE_UDP=true ;;
+    -l|--list)  LIST_ONLY=true ;;
+    -y|--yes)   ASSUME_YES=true ;;
+    -f|--force) FORCE=true ;;
+    -h|--help)  usage; exit 0 ;;
+    -*)         error "Unknown option: $1"; usage >&2; exit 2 ;;
+    *)
+      if [[ "$1" =~ ^[0-9]+$ ]] && [[ "$1" -ge 1 && "$1" -le 65535 ]]; then
+        PORTS+=("$1")
+      else
+        die "'$1' is not a valid port number (expected 1–65535)." 2
+      fi
+      ;;
+  esac
+  shift
+done
+
+require_cmd lsof
+ME="$(id -un)"
+
+# ---------------------------------------------------------------------------
+# Scanning
+# ---------------------------------------------------------------------------
+
+# lsof_fields PROTO — emit "port<TAB>proto<TAB>pid<TAB>command<TAB>address" for
+# every listening socket of that protocol. Uses lsof's field output (-F) so
+# command names containing spaces survive parsing; lsof escapes those as \x20.
+lsof_fields() {
+  local proto="$1" out line pid='' cmd='' name port addr
+  if [[ "$proto" == TCP ]]; then
+    out="$(lsof -nP -iTCP -sTCP:LISTEN +c 0 -F pcn 2>/dev/null || true)"
+  else
+    out="$(lsof -nP -iUDP +c 0 -F pcn 2>/dev/null || true)"
+  fi
+  [[ -z "$out" ]] && return 0
+
+  while IFS= read -r line; do
+    case "${line:0:1}" in
+      p) pid="${line:1}" ;;
+      c) cmd="$(printf '%s' "${line:1}" | sed 's/\\x20/ /g')" ;;
+      n)
+        name="${line:1}"
+        # "local->remote" is a connected socket, not something bound to a port
+        # of yours — skip it so the remote port never shows up as "yours".
+        [[ "$name" == *"->"* ]] && continue
+        port="${name##*:}"
+        addr="${name%:*}"
+        # Unbound UDP sockets come through as "*:*" — no port, nothing to kill.
+        [[ "$port" =~ ^[0-9]+$ ]] || continue
+        printf '%s\t%s\t%s\t%s\t%s\n' "$port" "$proto" "$pid" "$cmd" "$addr"
+        ;;
+    esac
+  done <<< "$out"
+}
+
+# scan_rows [port ...] — fill the ROW_* arrays with one entry per port/pid pair,
+# sorted by port. With port arguments, only those ports are kept and the
+# ephemeral-range filter is ignored (you asked for it by number, you get it).
+ROW_PORT=(); ROW_PROTO=(); ROW_PID=(); ROW_CMD=(); ROW_ADDR=()
+scan_rows() {
+  local wanted=" $* "
+  local raw port proto pid cmd addr
+
+  ROW_PORT=(); ROW_PROTO=(); ROW_PID=(); ROW_CMD=(); ROW_ADDR=()
+
+  raw="$(
+    {
+      lsof_fields TCP
+      $INCLUDE_UDP && lsof_fields UDP
+    } | awk -F'\t' '!seen[$1"\t"$2"\t"$3]++' | sort -t"$(printf '\t')" -k1,1n -k3,3n
+  )" || true
+  [[ -z "$raw" ]] && return 0
+
+  while IFS=$'\t' read -r port proto pid cmd addr; do
+    [[ -z "$port" ]] && continue
+    if [[ $# -gt 0 ]]; then
+      [[ "$wanted" == *" $port "* ]] || continue
+    elif ! $SHOW_ALL && [[ "$port" -ge $EPHEMERAL_MIN ]]; then
+      HIDDEN=$((HIDDEN + 1))
+      continue
+    fi
+    ROW_PORT+=("$port"); ROW_PROTO+=("$proto"); ROW_PID+=("$pid")
+    ROW_CMD+=("$cmd");   ROW_ADDR+=("$addr")
+  done <<< "$raw"
+}
+
+# ---------------------------------------------------------------------------
+# Process detail (owner, uptime, full command line)
+# ---------------------------------------------------------------------------
+
+PI_PID=(); PI_USER=(); PI_ETIME=(); PI_CMDLINE=()
+
+# load_pinfo — one ps call for every pid currently in ROW_PID.
+load_pinfo() {
+  PI_PID=(); PI_USER=(); PI_ETIME=(); PI_CMDLINE=()
+  [[ ${#ROW_PID[@]} -eq 0 ]] && return 0
+
+  local list p u e c
+  list="$(printf '%s\n' "${ROW_PID[@]}" | sort -un | tr '\n' ',' | sed 's/,$//')"
+  [[ -z "$list" ]] && return 0
+
+  while read -r p u e c; do
+    [[ -z "$p" ]] && continue
+    PI_PID+=("$p"); PI_USER+=("$u"); PI_ETIME+=("$e"); PI_CMDLINE+=("$c")
+  done < <(ps -o pid=,user=,etime=,command= -p "$list" 2>/dev/null || true)
+}
+
+# pi_index PID — echo the index of that pid in the PI_* arrays, or nothing.
+pi_index() {
+  local want="$1" i
+  [[ ${#PI_PID[@]} -eq 0 ]] && return 0
+  for i in "${!PI_PID[@]}"; do
+    if [[ "${PI_PID[$i]}" == "$want" ]]; then printf '%s' "$i"; return 0; fi
+  done
+}
+
+pi_field() {   # pi_field PID user|etime|cmdline
+  local idx; idx="$(pi_index "$1")"
+  [[ -z "$idx" ]] && { printf '?'; return 0; }
+  case "$2" in
+    user)    printf '%s' "${PI_USER[$idx]}" ;;
+    etime)   printf '%s' "${PI_ETIME[$idx]}" ;;
+    cmdline) printf '%s' "${PI_CMDLINE[$idx]}" ;;
+  esac
+}
+
+truncate_to() {  # truncate_to WIDTH STRING
+  local w="$1" s="$2"
+  if [[ ${#s} -gt $w ]]; then printf '%s…' "${s:0:$((w - 1))}"; else printf '%s' "$s"; fi
+}
+
+# ---------------------------------------------------------------------------
+# Display
+# ---------------------------------------------------------------------------
+
+print_table() {
+  local i port proto pid cmd addr user etime mark
+  printf '\n%s  %-7s %-6s %-8s %-14s %-26s %-17s %s%s\n' \
+    "$C_DIM" PORT PROTO PID USER COMMAND BOUND UPTIME "$C_RESET"
+  for i in "${!ROW_PORT[@]}"; do
+    port="${ROW_PORT[$i]}"; proto="${ROW_PROTO[$i]}"; pid="${ROW_PID[$i]}"
+    cmd="${ROW_CMD[$i]}";   addr="${ROW_ADDR[$i]}"
+    user="$(pi_field "$pid" user)"
+    etime="$(pi_field "$pid" etime)"
+    # Flag anything not owned by you — killing it will need sudo.
+    mark="  "
+    [[ "$user" != "$ME" ]] && mark="${C_YELLOW}!${C_RESET} "
+    printf '%s%s%-7s%s %-6s %-8s %-14s %-26s %-17s %s%s%s\n' \
+      "$mark" "$C_BOLD" "$port" "$C_RESET" "$proto" "$pid" \
+      "$(truncate_to 14 "$user")" "$(truncate_to 26 "$cmd")" \
+      "$(truncate_to 17 "$addr")" "$C_DIM" "$etime" "$C_RESET"
+  done
+  echo
+}
+
+# ---------------------------------------------------------------------------
+# Killing
+# ---------------------------------------------------------------------------
+
+# wait_for_exit PID TENTHS — poll until the process is gone. 0 if it exited.
+wait_for_exit() {
+  local pid="$1" ticks="$2" i=0
+  while [[ $i -lt $ticks ]]; do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      [[ -t 1 ]] && printf '\r\033[2K'
+      return 0
+    fi
+    if [[ -t 1 ]]; then
+      printf '\r\033[2K%s⏳%s Waiting for pid %s to exit… %ss' \
+        "$C_CYAN" "$C_RESET" "$pid" "$(awk -v t="$i" 'BEGIN{printf "%.1f", t/10}')"
+    fi
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [[ -t 1 ]] && printf '\r\033[2K'
+  return 1
+}
+
+# port_is_free PORT — true when nothing listens on it any more.
+port_is_free() {
+  local hits
+  hits="$(lsof -nP -iTCP:"$1" -sTCP:LISTEN -t 2>/dev/null || true)"
+  if $INCLUDE_UDP && [[ -z "$hits" ]]; then
+    hits="$(lsof -nP -iUDP:"$1" -t 2>/dev/null || true)"
+  fi
+  [[ -z "$hits" ]]
+}
+
+# send_signal PID SIG LABEL — returns 0 if delivered (or the process had gone).
+send_signal() {
+  local pid="$1" sig="$2" label="$3"
+  if kill -s "$sig" "$pid" 2>/dev/null; then
+    info "Sent ${C_BOLD}SIG${sig}${C_RESET} to ${label} ${C_DIM}(pid ${pid})${C_RESET}" "📮"
+    return 0
+  fi
+  if ! kill -0 "$pid" 2>/dev/null; then
+    info "pid ${pid} had already exited."
+    return 0
+  fi
+  error "Permission denied sending SIG${sig} to pid ${pid}."
+  return 1
+}
+
+# kill_row INDEX — confirm and kill the process behind one row. 0 if it died.
+kill_row() {
+  local i="$1"
+  local port="${ROW_PORT[$i]}" proto="${ROW_PROTO[$i]}" pid="${ROW_PID[$i]}"
+  local cmd="${ROW_CMD[$i]}" addr="${ROW_ADDR[$i]}"
+  local user etime cmdline
+
+  user="$(pi_field "$pid" user)"
+  etime="$(pi_field "$pid" etime)"
+  cmdline="$(pi_field "$pid" cmdline)"
+
+  heading "Port ${port}/${proto} · ${cmd}" "🎯"
+  info "PID:     ${C_BOLD}${pid}${C_RESET}"
+  info "Owner:   ${user}"
+  info "Bound:   ${addr}:${port}"
+  info "Uptime:  ${etime}"
+  dim  "  $(truncate_to 110 "$cmdline")"
+
+  # --- guards --------------------------------------------------------------
+  if [[ "$pid" -eq 1 ]]; then
+    error "Refusing to kill pid 1 — that is the init process."
+    return 1
+  fi
+  if [[ "$pid" -eq "$$" || "$pid" -eq "${PPID:-0}" ]]; then
+    warn "pid ${pid} is portkill itself (or its parent shell) — refusing."
+    return 1
+  fi
+  if [[ "$user" != "$ME" && "$user" != "?" ]]; then
+    warn "Owned by '${user}', not you — the signal will likely be refused."
+    dim  "   Retry with: sudo portkill ${port}"
+  fi
+
+  if ! $ASSUME_YES; then
+    if ! confirm "Kill ${cmd} (pid ${pid}) holding port ${port}?" n; then
+      info "Kept ${cmd} on port ${port}."
+      return 1
+    fi
+  fi
+
+  # --- signal --------------------------------------------------------------
+  local first_sig=TERM
+  $FORCE && first_sig=KILL
+
+  send_signal "$pid" "$first_sig" "$cmd" || {
+    dim "   Try: sudo portkill ${port}"
+    return 1
+  }
+
+  if wait_for_exit "$pid" 50; then
+    success "${cmd} (pid ${pid}) exited." "🗑️"
+  else
+    warn "pid ${pid} is still alive 5s after SIG${first_sig}."
+    if [[ "$first_sig" == KILL ]]; then
+      error "SIGKILL did not clear pid ${pid} — it may be stuck in the kernel (uninterruptible)."
+      return 1
+    fi
+    if $ASSUME_YES || confirm "Escalate to SIGKILL?" n; then
+      send_signal "$pid" KILL "$cmd" || return 1
+      if wait_for_exit "$pid" 30; then
+        success "${cmd} (pid ${pid}) killed." "🗑️"
+      else
+        error "pid ${pid} survived SIGKILL."
+        return 1
+      fi
+    else
+      info "Left pid ${pid} running."
+      return 1
+    fi
+  fi
+
+  if port_is_free "$port"; then
+    success "Port ${C_BOLD}${port}${C_RESET} is now free." "🔓"
+  else
+    warn "Port ${port} is still held — another process is listening on it too."
+  fi
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# Mode 1 — explicit ports
+# ---------------------------------------------------------------------------
+
+run_for_ports() {
+  local port i killed=0 kept=0 empty=0
+
+  heading "portkill · $# port(s)" "🔌"
+  info "Checking: ${C_BOLD}$*${C_RESET}"
+
+  for port in "$@"; do
+    HIDDEN=0
+    scan_rows "$port"
+    if [[ ${#ROW_PORT[@]} -eq 0 ]]; then
+      success "Nothing is listening on port ${C_BOLD}${port}${C_RESET} — it is already free."
+      empty=$((empty + 1))
+      continue
+    fi
+    load_pinfo
+    print_table
+
+    if $LIST_ONLY; then
+      info "List mode — nothing killed." "🧪"
+      continue
+    fi
+
+    for i in "${!ROW_PORT[@]}"; do
+      if kill_row "$i"; then killed=$((killed + 1)); else kept=$((kept + 1)); fi
+    done
+  done
+
+  echo
+  stat "killed" "$killed"
+  [[ $kept -gt 0 ]]  && stat "kept/failed" "$kept"
+  [[ $empty -gt 0 ]] && stat "already free" "$empty"
+  success "Done." "🎉"
+}
+
+# ---------------------------------------------------------------------------
+# Mode 2 — scan everything, pick from a dropdown
+# ---------------------------------------------------------------------------
+
+run_scan() {
+  local i labels killed=0
+
+  heading "portkill · listening ports" "🔍"
+  $INCLUDE_UDP && info "Including bound UDP sockets."
+
+  while true; do
+    HIDDEN=0
+    info "Scanning listening sockets…" "⏳"
+    scan_rows
+    load_pinfo
+
+    stat "listening ports" "${#ROW_PORT[@]}"
+    if [[ "$(id -u)" -ne 0 ]]; then
+      dim "   Sockets owned by other users (root daemons) stay invisible without sudo."
+    fi
+    if [[ ${HIDDEN:-0} -gt 0 ]]; then
+      dim "   ${HIDDEN} high port(s) (>= ${EPHEMERAL_MIN}) hidden — app-internal, mostly. Show with --all"
+    fi
+
+    if [[ ${#ROW_PORT[@]} -eq 0 ]]; then
+      success "Nothing is listening. 🎉"
+      break
+    fi
+
+    print_table
+
+    if $LIST_ONLY; then
+      info "List mode — nothing killed." "🧪"
+      break
+    fi
+
+    # Build the dropdown: one entry per port, plus an explicit way out.
+    labels=()
+    for i in "${!ROW_PORT[@]}"; do
+      labels+=("$(printf '%-6s %-5s %s (pid %s, %s)' \
+        "${ROW_PORT[$i]}" "${ROW_PROTO[$i]}" "${ROW_CMD[$i]}" "${ROW_PID[$i]}" \
+        "$(pi_field "${ROW_PID[$i]}" user)")")
+    done
+    labels+=("Cancel — kill nothing")
+
+    menu "Which port do you want to kill?" "${labels[@]}"
+    if [[ "$MENU_INDEX" -lt 0 || "$MENU_INDEX" -ge ${#ROW_PORT[@]} ]]; then
+      if [[ "$MENU_INDEX" -lt 0 ]] && ! _tty_ok; then
+        warn "No terminal available for the dropdown — name a port instead: portkill 3000"
+      else
+        info "Cancelled — nothing killed."
+      fi
+      break
+    fi
+
+    if kill_row "$MENU_INDEX"; then killed=$((killed + 1)); fi
+
+    echo
+    confirm "Kill another port?" y || break
+  done
+
+  echo
+  stat "killed" "$killed"
+  success "Done." "🎉"
+}
+
+# ---------------------------------------------------------------------------
+
+HIDDEN=0
+if [[ ${#PORTS[@]} -gt 0 ]]; then
+  run_for_ports "${PORTS[@]}"
+else
+  if $ASSUME_YES; then
+    warn "--yes only applies to ports named on the command line; the scan still asks."
+  fi
+  run_scan
+fi
