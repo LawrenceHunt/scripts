@@ -1,0 +1,450 @@
+#!/usr/bin/env -S mise exec node@22 -- node
+
+import fs from "fs";
+import path from "path";
+import { spawn, spawnSync } from "child_process";
+
+const SUPPORTED = new Set([".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"]);
+
+const USAGE = `Usage:
+  vid-opt <input-file-or-folder> [output-file-or-folder] [options]
+
+Examples:
+  vid-opt ./videos/big.mov
+  vid-opt ./videos/big.mov ./dist
+  vid-opt ./videos/big.mov --format both --width 1280 --crf 28 --max-fps 30
+  vid-opt ./videos ./videos/optimized --format mp4
+
+Options:
+  --format <mp4|webm|both>    Output format(s). Default: mp4
+  --width <px>               Max output width (keeps aspect). Default: 1280
+  --crf <n>                  Quality (lower = better, bigger). Default: 28
+  --preset <name>            x264 preset. Default: slow
+  --max-fps <n>              Limit FPS if source is higher. Default: 30
+  --audio-bitrate <rate>     Audio bitrate for MP4. Default: 128k
+  --poster                   Also generate a poster JPG. Default: on
+  --no-poster                Disable poster generation
+  --overwrite                Overwrite existing outputs. Default: off
+
+Notes:
+  - Requires ffmpeg + ffprobe on PATH. macOS: brew install ffmpeg
+  - MP4 output uses H.264 + AAC with "faststart" for web playback.
+`;
+
+function formatBytes(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  const k = 1024;
+  const sizes = ["B", "KB", "MB", "GB", "TB"];
+  const i = Math.min(
+    sizes.length - 1,
+    Math.floor(Math.log(bytes) / Math.log(k))
+  );
+  return `${Math.round((bytes / Math.pow(k, i)) * 100) / 100} ${sizes[i]}`;
+}
+
+function parseArgs(argv) {
+  const args = {
+    inputPath: undefined,
+    outputPath: undefined,
+    format: "mp4",
+    width: 1280,
+    crf: 28,
+    preset: "slow",
+    maxFps: 30,
+    audioBitrate: "128k",
+    poster: true,
+    overwrite: false,
+  };
+
+  const positionals = [];
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (!a.startsWith("--")) {
+      positionals.push(a);
+      continue;
+    }
+
+    const next = () => {
+      const v = argv[i + 1];
+      if (!v || v.startsWith("--")) return undefined;
+      i++;
+      return v;
+    };
+
+    switch (a) {
+      case "--format": {
+        const v = next();
+        if (v) args.format = v;
+        break;
+      }
+      case "--width": {
+        const v = Number(next());
+        if (Number.isFinite(v) && v > 0) args.width = Math.floor(v);
+        break;
+      }
+      case "--crf": {
+        const v = Number(next());
+        if (Number.isFinite(v) && v >= 0 && v <= 51) args.crf = Math.floor(v);
+        break;
+      }
+      case "--preset": {
+        const v = next();
+        if (v) args.preset = v;
+        break;
+      }
+      case "--max-fps": {
+        const v = Number(next());
+        if (Number.isFinite(v) && v > 0) args.maxFps = Math.floor(v);
+        break;
+      }
+      case "--audio-bitrate": {
+        const v = next();
+        if (v) args.audioBitrate = v;
+        break;
+      }
+      case "--poster":
+        args.poster = true;
+        break;
+      case "--no-poster":
+        args.poster = false;
+        break;
+      case "--overwrite":
+        args.overwrite = true;
+        break;
+      case "--help":
+      case "-h":
+        console.log(USAGE);
+        process.exit(0);
+      default:
+        console.error(`Unknown option: ${a}\n`);
+        console.error(USAGE);
+        process.exit(1);
+    }
+  }
+
+  args.inputPath = positionals[0];
+  args.outputPath = positionals[1];
+  return args;
+}
+
+function assertFfmpegAvailable() {
+  const ffmpeg = spawnSync("ffmpeg", ["-version"], { stdio: "ignore" });
+  const ffprobe = spawnSync("ffprobe", ["-version"], { stdio: "ignore" });
+  if (
+    ffmpeg.error ||
+    ffprobe.error ||
+    ffmpeg.status !== 0 ||
+    ffprobe.status !== 0
+  ) {
+    console.error("Error: ffmpeg/ffprobe not found on PATH.\n");
+    console.error("Install on macOS with: brew install ffmpeg\n");
+    process.exit(1);
+  }
+}
+
+function run(cmd, args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd, args, { stdio: "inherit" });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`${cmd} exited with code ${code}`));
+    });
+  });
+}
+
+function runCapture(cmd, args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    let err = "";
+    child.stdout.on("data", (d) => (out += d.toString("utf8")));
+    child.stderr.on("data", (d) => (err += d.toString("utf8")));
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) resolve(out);
+      else reject(new Error(`${cmd} exited with code ${code}\n${err}`.trim()));
+    });
+  });
+}
+
+async function probe(inputFile) {
+  const raw = await runCapture("ffprobe", [
+    "-v",
+    "error",
+    "-print_format",
+    "json",
+    "-show_streams",
+    "-show_format",
+    inputFile,
+  ]);
+  const json = JSON.parse(raw);
+  const v = (json.streams || []).find((s) => s.codec_type === "video");
+  const a = (json.streams || []).find((s) => s.codec_type === "audio");
+  return { video: v, audio: a, format: json.format || {} };
+}
+
+function parseFps(rate) {
+  if (!rate || typeof rate !== "string") return undefined;
+  const [n, d] = rate.split("/").map(Number);
+  if (!Number.isFinite(n) || !Number.isFinite(d) || d === 0) return undefined;
+  return n / d;
+}
+
+function makeOutputName(inputFile, suffix, ext) {
+  const base = path.basename(inputFile, path.extname(inputFile));
+  return `${base}.${suffix}.${ext}`;
+}
+
+function ensureWritableTarget(outFile, overwrite) {
+  if (!fs.existsSync(outFile)) return;
+  if (!overwrite) {
+    throw new Error(`Output already exists (use --overwrite): ${outFile}`);
+  }
+}
+
+async function encodeMp4(inputFile, outFile, opts, meta) {
+  const srcFps =
+    parseFps(meta?.video?.avg_frame_rate) ??
+    parseFps(meta?.video?.r_frame_rate);
+  const fps = srcFps && srcFps > opts.maxFps ? opts.maxFps : undefined;
+  const g = fps ? fps * 2 : opts.maxFps * 2; // ~2s GOP
+
+  // scale down to max width, keep aspect ratio, ensure even dimensions
+  const vfParts = [`scale=w='min(${opts.width},iw)':h=-2:flags=lanczos`];
+  if (fps) vfParts.push(`fps=${fps}`);
+  const vf = vfParts.join(",");
+
+  const args = [
+    "-hide_banner",
+    "-y",
+    "-i",
+    inputFile,
+    "-map_metadata",
+    "-1",
+    "-map_chapters",
+    "-1",
+    "-vf",
+    vf,
+    "-c:v",
+    "libx264",
+    "-preset",
+    opts.preset,
+    "-crf",
+    String(opts.crf),
+    "-profile:v",
+    "high",
+    "-pix_fmt",
+    "yuv420p",
+    "-movflags",
+    "+faststart",
+    "-g",
+    String(g),
+    "-keyint_min",
+    String(g),
+    "-sc_threshold",
+    "0",
+    "-c:a",
+    "aac",
+    "-b:a",
+    opts.audioBitrate,
+    "-ac",
+    "2",
+    outFile,
+  ];
+
+  // Only overwrite if requested; we still pass -y for non-interactive runs.
+  ensureWritableTarget(outFile, opts.overwrite);
+  await run("ffmpeg", args);
+}
+
+async function encodeWebmVp9(inputFile, outFile, opts, meta) {
+  const srcFps =
+    parseFps(meta?.video?.avg_frame_rate) ??
+    parseFps(meta?.video?.r_frame_rate);
+  const fps = srcFps && srcFps > opts.maxFps ? opts.maxFps : undefined;
+
+  const vfParts = [`scale=w='min(${opts.width},iw)':h=-2:flags=lanczos`];
+  if (fps) vfParts.push(`fps=${fps}`);
+  const vf = vfParts.join(",");
+
+  const args = [
+    "-hide_banner",
+    "-y",
+    "-i",
+    inputFile,
+    "-map_metadata",
+    "-1",
+    "-map_chapters",
+    "-1",
+    "-vf",
+    vf,
+    "-c:v",
+    "libvpx-vp9",
+    "-b:v",
+    "0",
+    "-crf",
+    "33",
+    "-row-mt",
+    "1",
+    "-threads",
+    "0",
+    "-c:a",
+    "libopus",
+    "-b:a",
+    "96k",
+    outFile,
+  ];
+
+  ensureWritableTarget(outFile, opts.overwrite);
+  await run("ffmpeg", args);
+}
+
+async function makePoster(inputFile, outFile, opts) {
+  const args = [
+    "-hide_banner",
+    "-y",
+    "-ss",
+    "00:00:01.000",
+    "-i",
+    inputFile,
+    "-frames:v",
+    "1",
+    "-q:v",
+    "2",
+    "-vf",
+    `scale=w='min(${opts.width},iw)':h=-2:flags=lanczos`,
+    outFile,
+  ];
+
+  ensureWritableTarget(outFile, opts.overwrite);
+  await run("ffmpeg", args);
+}
+
+async function optimizeOne(inputFile, outputHint, opts) {
+  const inputSize = fs.statSync(inputFile).size;
+  const meta = await probe(inputFile);
+
+  const outputs = [];
+  const outDir =
+    outputHint &&
+    fs.existsSync(outputHint) &&
+    fs.statSync(outputHint).isDirectory()
+      ? outputHint
+      : undefined;
+
+  const outBaseDir = outDir || path.dirname(outputHint || inputFile);
+  fs.mkdirSync(outBaseDir, { recursive: true });
+
+  const baseOutputFile = () => {
+    if (!outputHint) return undefined;
+    if (outDir) return undefined;
+    // If user gave a file path, respect it.
+    if (path.extname(outputHint)) return outputHint;
+    return undefined;
+  };
+
+  const format = String(opts.format || "mp4").toLowerCase();
+  const wantMp4 = format === "mp4" || format === "both";
+  const wantWebm = format === "webm" || format === "both";
+
+  if (wantMp4) {
+    const outFile =
+      baseOutputFile() &&
+      path.extname(baseOutputFile()).toLowerCase() === ".mp4"
+        ? baseOutputFile()
+        : path.join(outBaseDir, makeOutputName(inputFile, "web", "mp4"));
+    console.log(
+      `\nEncoding MP4: ${path.basename(inputFile)} → ${path.basename(outFile)}`
+    );
+    await encodeMp4(inputFile, outFile, opts, meta);
+    outputs.push(outFile);
+  }
+
+  if (wantWebm) {
+    const outFile = path.join(
+      outBaseDir,
+      makeOutputName(inputFile, "web", "webm")
+    );
+    console.log(
+      `\nEncoding WebM: ${path.basename(inputFile)} → ${path.basename(outFile)}`
+    );
+    await encodeWebmVp9(inputFile, outFile, opts, meta);
+    outputs.push(outFile);
+  }
+
+  if (opts.poster) {
+    const outFile = path.join(
+      outBaseDir,
+      makeOutputName(inputFile, "poster", "jpg")
+    );
+    console.log(
+      `\nPoster: ${path.basename(inputFile)} → ${path.basename(outFile)}`
+    );
+    await makePoster(inputFile, outFile, opts);
+    outputs.push(outFile);
+  }
+
+  const outputBytes = outputs
+    .filter((p) => fs.existsSync(p))
+    .reduce((sum, p) => sum + fs.statSync(p).size, 0);
+  const reduction =
+    outputBytes > 0 ? ((1 - outputBytes / inputSize) * 100).toFixed(1) : "0.0";
+
+  console.log(
+    `\n✓ ${path.basename(inputFile)}: ${formatBytes(inputSize)} → ${formatBytes(
+      outputBytes
+    )} total (${reduction}% reduction)`
+  );
+}
+
+async function processPath(inputPath, outputPath, opts) {
+  const stats = fs.statSync(inputPath);
+
+  if (stats.isFile()) {
+    if (!SUPPORTED.has(path.extname(inputPath).toLowerCase())) {
+      throw new Error(
+        `Unsupported input extension: ${path.extname(inputPath)}`
+      );
+    }
+    await optimizeOne(inputPath, outputPath, opts);
+    return;
+  }
+
+  if (!stats.isDirectory()) {
+    throw new Error("Input path must be a file or directory");
+  }
+
+  const files = fs
+    .readdirSync(inputPath)
+    .filter((file) => SUPPORTED.has(path.extname(file).toLowerCase()))
+    .map((file) => path.join(inputPath, file));
+
+  if (files.length === 0) {
+    console.log("No supported videos found in directory.");
+    return;
+  }
+
+  const outDir = outputPath || path.join(inputPath, "optimized");
+  fs.mkdirSync(outDir, { recursive: true });
+
+  console.log(`Optimising ${files.length} video(s)...`);
+  for (const f of files) {
+    await optimizeOne(f, outDir, opts);
+  }
+}
+
+const args = parseArgs(process.argv.slice(2));
+if (!args.inputPath) {
+  console.error(USAGE);
+  process.exit(1);
+}
+
+assertFfmpegAvailable();
+
+processPath(args.inputPath, args.outputPath, args)
+  .then(() => console.log("\nDone."))
+  .catch((err) => {
+    console.error(`\nError: ${err.message}`);
+    process.exit(1);
+  });

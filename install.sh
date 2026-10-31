@@ -36,6 +36,19 @@ info "Repo:   ${C_BOLD}${REPO_DIR}${C_RESET}"
 info "Target: ${C_BOLD}${BIN_DIR}${C_RESET}"
 mkdir -p "$BIN_DIR"
 
+# --- language dependencies --------------------------------------------------
+# Python tools carry inline (PEP 723) deps that uv resolves on first run, so
+# only Node needs an install step. The toolchain itself comes from mise.
+if [[ -f "$REPO_DIR/node/package.json" ]]; then
+  if command -v mise >/dev/null 2>&1; then
+    info "Installing Node dependencies ${C_DIM}(node/node_modules)${C_RESET}"
+    (cd "$REPO_DIR/node" && mise exec node@22 -- npm install --no-audit --no-fund --silent)
+    success "Node dependencies ready."
+  else
+    warn "mise not found — Node and Python tools need it. Install with: brew install mise"
+  fi
+fi
+
 installed=0
 skipped=0
 

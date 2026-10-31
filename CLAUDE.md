@@ -28,6 +28,16 @@ bash/
     gprune             # prune local branches whose remote is gone
   net/
     portkill           # inspect listening ports and kill what holds them (alias: pk)
+node/
+  package.json         # shared deps for every node tool (node_modules is gitignored)
+  media/
+    img-opt            # resize/convert images with sharp
+    vid-opt            # re-encode video for the web with ffmpeg
+    glb-opt            # shrink .glb 3D models with gltf-transform
+    pdf-opt            # compress PDFs with Ghostscript
+python/
+  media/
+    ytdl               # download YouTube videos (merges streams with ffmpeg)
 ```
 
 When a new language is introduced, mirror this shape (e.g. `python/lib/`,
@@ -54,6 +64,24 @@ There is a single mechanism. Do not invent per-tool install steps.
 
 To add a new tool: drop the executable in the right `<language>/<theme>/` folder,
 `chmod +x` it, and re-run `./install.sh`.
+
+## Toolchains: mise
+
+Runtimes come from [mise](https://mise.jdx.dev), never from whatever happens to
+be on `PATH`. `mise.toml` at the repo root declares the versions, and each
+non-bash tool pins the same versions in its shebang so it runs correctly from
+any directory:
+
+- **Python** — `#!/usr/bin/env -S mise exec python@3.13 uv@0.9 -- uv run --quiet --script`,
+  with dependencies declared inline in a PEP 723 `# /// script` block. uv builds
+  and caches the environment on first run; there is no venv or lockfile to manage.
+- **Node** — `#!/usr/bin/env -S mise exec node@22 -- node`. Dependencies live in
+  the shared `node/package.json`; `install.sh` runs `npm install` there. Node
+  resolves the symlink to the real file, so imports find `node/node_modules`.
+  Code that compares `process.argv[1]` to its own path must `realpath` both.
+
+When bumping a version, change it in `mise.toml` and in the shebangs together.
+`mise run install` is an alias for `./install.sh`.
 
 ## Output & interaction conventions
 

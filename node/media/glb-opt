@@ -1,0 +1,169 @@
+#!/usr/bin/env -S mise exec node@22 -- node
+
+import fs from "fs";
+import path from "path";
+import { NodeIO } from "@gltf-transform/core";
+import {
+  dedup,
+  textureCompress,
+  prune,
+  quantize,
+  simplify,
+  meshopt,
+  weld,
+  reorder,
+} from "@gltf-transform/functions";
+import { MeshoptSimplifier, MeshoptEncoder } from "meshoptimizer";
+
+const [, , inputPath, outputPath] = process.argv;
+
+if (!inputPath) {
+  console.error(
+    "Usage: glb-opt <input-file-or-folder> [output-file-or-folder]"
+  );
+  process.exit(1);
+}
+
+// Register meshoptimizer dependencies with NodeIO
+const io = new NodeIO().registerDependencies({
+  "meshopt.simplifier": MeshoptSimplifier,
+  "meshopt.encoder": MeshoptEncoder,
+});
+
+async function optimizeGLB(inputFile, outputFile) {
+  try {
+    console.log(`Optimizing: ${path.basename(inputFile)}...`);
+
+    // Read the GLB file
+    const document = await io.read(inputFile);
+
+    // Apply optimizations
+    await document.transform(
+      // Remove unused data (materials, meshes, nodes, etc.)
+      prune(),
+      // Remove duplicate data
+      dedup(),
+      // Weld vertices to improve compression
+      weld(),
+      // Reorder mesh data for better compression
+      reorder({ encoder: MeshoptEncoder }),
+      // Quantize vertex attributes to reduce precision (saves significant space)
+      // More aggressive quantization for better compression
+      quantize({
+        quantizePosition: 13, // More aggressive: 13 bits instead of 14
+        quantizeNormal: 9, // More aggressive: 9 bits instead of 10
+        quantizeTexcoord: 11, // More aggressive: 11 bits instead of 12
+        quantizeColor: 8, // 8 bits for colors
+        quantizeWeight: 8, // 8 bits for skin weights
+      }),
+      // Simplify meshes (reduces polygon count) - extremely aggressive
+      simplify({
+        simplifier: MeshoptSimplifier,
+        ratio: 0.2, // Keep only 20% of triangles (extremely aggressive for max reduction)
+        error: 0.003, // Higher error threshold for maximum reduction
+      }),
+      // Use meshopt compression (often better compression than Draco)
+      meshopt({
+        encoder: MeshoptEncoder,
+        level: "high", // "high" = best compression, "medium" = balanced, "low" = faster
+      }),
+      // Compress textures more aggressively (matches CLI --texture-compress webp --texture-resize 2048)
+      textureCompress({
+        targetFormat: "webp",
+        quality: 0.4, // Extremely aggressive compression for maximum size reduction
+        resize: [1024, 1024], // Even smaller textures: 1024x1024 instead of 2048x2048
+      })
+    );
+
+    // Write the optimized GLB
+    await io.write(outputFile, document);
+
+    const inputSize = fs.statSync(inputFile).size;
+    const outputSize = fs.statSync(outputFile).size;
+    const reduction = ((1 - outputSize / inputSize) * 100).toFixed(1);
+
+    console.log(
+      `✓ ${path.basename(inputFile)}: ${formatBytes(inputSize)} → ${formatBytes(
+        outputSize
+      )} (${reduction}% reduction)`
+    );
+
+    return { inputSize, outputSize };
+  } catch (err) {
+    console.error(
+      `✗ Failed to optimize ${path.basename(inputFile)}: ${err.message}`
+    );
+    throw err;
+  }
+}
+
+function formatBytes(bytes) {
+  if (bytes === 0) return "0 B";
+  const k = 1024;
+  const sizes = ["B", "KB", "MB", "GB"];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + " " + sizes[i];
+}
+
+async function processPath(inputPath, outputPath) {
+  const stats = fs.statSync(inputPath);
+
+  if (stats.isFile()) {
+    // Single file
+    if (!inputPath.toLowerCase().endsWith(".glb")) {
+      console.error("Error: Input file must be a .glb file");
+      process.exit(1);
+    }
+
+    const output = outputPath || inputPath.replace(/\.glb$/i, ".optimized.glb");
+    await optimizeGLB(inputPath, output);
+  } else if (stats.isDirectory()) {
+    // Directory of files
+    const files = fs
+      .readdirSync(inputPath)
+      .filter((file) => file.toLowerCase().endsWith(".glb"))
+      .map((file) => path.join(inputPath, file));
+
+    if (files.length === 0) {
+      console.log("No .glb files found in directory.");
+      process.exit(0);
+    }
+
+    const outputDir = outputPath || path.join(inputPath, "optimized");
+    fs.mkdirSync(outputDir, { recursive: true });
+
+    console.log(`Optimizing ${files.length} GLB file(s)...\n`);
+
+    let totalInputSize = 0;
+    let totalOutputSize = 0;
+
+    for (const file of files) {
+      const outputFile = path.join(outputDir, path.basename(file));
+      const result = await optimizeGLB(file, outputFile);
+      totalInputSize += result.inputSize;
+      totalOutputSize += result.outputSize;
+    }
+
+    const totalReduction = (
+      (1 - totalOutputSize / totalInputSize) *
+      100
+    ).toFixed(1);
+    console.log(
+      `\nTotal: ${formatBytes(totalInputSize)} → ${formatBytes(
+        totalOutputSize
+      )} (${totalReduction}% reduction)`
+    );
+  } else {
+    console.error("Error: Input path must be a file or directory");
+    process.exit(1);
+  }
+}
+
+processPath(inputPath, outputPath)
+  .then(() => {
+    console.log("\nDone.");
+  })
+  .catch((err) => {
+    console.error("\nError:", err.message);
+    process.exit(1);
+  });
