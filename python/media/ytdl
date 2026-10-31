@@ -8,6 +8,10 @@ ytdl — download a YouTube video at the highest resolution available, ad free.
 
 YouTube only serves high resolutions as separate video and audio streams, so
 both are downloaded and merged into one .mp4 with ffmpeg (no re-encoding).
+With --audio, only the best audio stream is saved (.m4a, no ffmpeg needed).
+
+Progress goes to stderr. When stdout is piped, the saved file paths are
+printed there, one per line, so other tools can consume them.
 
 Runs via mise (provides python + uv) and uv (resolves the inline dependencies
 above into a cached environment), so there is nothing to install by hand
@@ -34,7 +38,7 @@ from rich.progress import (
     TransferSpeedColumn,
 )
 
-console = Console()
+console = Console(stderr=True)
 PROG = os.path.basename(sys.argv[0])
 
 
@@ -51,6 +55,7 @@ def parse_args() -> argparse.Namespace:
         default=Path.home() / "Movies",
         help="directory to save into (default: ~/Movies)",
     )
+    parser.add_argument("--audio", action="store_true", help="save audio only (.m4a)")
     return parser.parse_args()
 
 
@@ -83,16 +88,36 @@ def fetch(yt: YouTube, stream, label: str, folder: str, filename: str) -> str:
         return stream.download(output_path=folder, filename=filename)
 
 
-def download(url: str, output: Path) -> bool:
-    """Download one video. Returns True on success."""
+def download_audio(yt: YouTube, output: Path) -> Path | None:
+    """Save the best mp4 audio stream as .m4a. Returns the path."""
+    audio = yt.streams.filter(only_audio=True, mime_type="audio/mp4").order_by("abr").desc().first()
+    if audio is None:
+        console.print("[bold red]❌ No audio stream found.[/]")
+        return None
+    console.print(f"   🎬 [bold]{yt.title}[/]")
+    console.print(f"   [dim]{yt.author} · {audio.abr} audio · {audio.filesize_mb:.1f} MB[/]")
+    target = output / f"{audio.default_filename.rsplit('.', 1)[0]}.m4a"
+    if target.exists():
+        console.print(f"[yellow]⚠️  Already exists, skipping:[/] {target}")
+        return target
+    started = time.monotonic()
+    fetch(yt, audio, "🔊 audio", str(output), target.name)
+    console.print(f"[bold green]✅ Saved[/] {target} [dim]({time.monotonic() - started:.1f}s)[/]")
+    return target
+
+
+def download(url: str, output: Path, audio_only: bool = False) -> Path | None:
+    """Download one video. Returns the saved path, or None on failure."""
     console.print(f"\n[bold cyan]🔍 Looking up[/] [dim]{url}[/]")
     try:
         with console.status("⏳ Fetching video info…"):
             yt = YouTube(url)
             video, audio = pick_streams(yt)
+        if audio_only:
+            return download_audio(yt, output)
         if video is None or audio is None:
             console.print("[bold red]❌ No downloadable video/audio streams found.[/]")
-            return False
+            return None
 
         total_mb = video.filesize_mb + audio.filesize_mb
         console.print(f"   🎬 [bold]{yt.title}[/]")
@@ -104,7 +129,7 @@ def download(url: str, output: Path) -> bool:
         target = output / f"{video.default_filename.rsplit('.', 1)[0]}.mp4"
         if target.exists():
             console.print(f"[yellow]⚠️  Already exists, skipping:[/] {target}")
-            return True
+            return target
 
         started = time.monotonic()
         with tempfile.TemporaryDirectory(prefix="ytdl-") as tmp:
@@ -120,21 +145,21 @@ def download(url: str, output: Path) -> bool:
                 )
             if result.returncode != 0:
                 console.print(f"[bold red]❌ ffmpeg failed:[/] {result.stderr.strip()}")
-                return False
+                return None
             shutil.move(merged, target)
 
         elapsed = time.monotonic() - started
         console.print(f"[bold green]✅ Saved[/] {target} [dim]({elapsed:.1f}s)[/]")
-        return True
+        return target
 
     except (exceptions.PytubeFixError, OSError) as e:
         console.print(f"[bold red]❌ {type(e).__name__}:[/] {e}")
-        return False
+        return None
 
 
 def main() -> int:
     args = parse_args()
-    if shutil.which("ffmpeg") is None:
+    if not args.audio and shutil.which("ffmpeg") is None:
         console.print("[bold red]❌ ffmpeg is required to merge video and audio.[/]")
         console.print("   Install with: [cyan]brew install ffmpeg[/]")
         return 1
@@ -142,7 +167,11 @@ def main() -> int:
     output.mkdir(parents=True, exist_ok=True)
     console.print(f"[bold]📁 Saving to[/] {output}")
 
-    ok = sum(download(url, output) for url in args.urls)
+    saved = [download(url, output, args.audio) for url in args.urls]
+    if not sys.stdout.isatty():
+        for path in filter(None, saved):
+            print(path, flush=True)
+    ok = sum(1 for path in saved if path)
     failed = len(args.urls) - ok
 
     console.print(f"\n📊 [green]{ok} downloaded[/]" + (f", [red]{failed} failed[/]" if failed else ""))

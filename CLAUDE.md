@@ -28,16 +28,26 @@ bash/
     gprune             # prune local branches whose remote is gone
   net/
     portkill           # inspect listening ports and kill what holds them (alias: pk)
+  ai/
+    yt-summary         # yt-transcript URL | summarise
 node/
   package.json         # shared deps for every node tool (node_modules is gitignored)
+  lib/
+    ui.mjs             # palette, spinner, progress bar, sizes, gum confirm/choose
   media/
     img-opt            # resize/convert images with sharp
     vid-opt            # re-encode video for the web with ffmpeg
     glb-opt            # shrink .glb 3D models with gltf-transform
     pdf-opt            # compress PDFs with Ghostscript
 python/
+  lib/
+    scriptlib.py       # stderr console, stdout emit, .env, cache, gum confirm/choose
   media/
     ytdl               # download YouTube videos (merges streams with ffmpeg)
+  ai/
+    yt-transcript      # captions, or ytdl --audio | transcribe as a fallback
+    transcribe         # audio/video -> text (OpenAI)
+    summarise          # text -> summary (Anthropic or OpenAI, whichever key is set)
 ```
 
 When a new language is introduced, mirror this shape (e.g. `python/lib/`,
@@ -80,6 +90,11 @@ any directory:
   resolves the symlink to the real file, so imports find `node/node_modules`.
   Code that compares `process.argv[1]` to its own path must `realpath` both.
 
+Python tools import `python/lib/scriptlib.py` by resolving their real path:
+`sys.path.insert(0, str(Path(os.path.realpath(__file__)).parents[1] / "lib"))`.
+Each tool still lists every third-party package it imports (including `rich`,
+which scriptlib uses) in its own PEP 723 block.
+
 When bumping a version, change it in `mise.toml` and in the shebangs together.
 `mise run install` is an alias for `./install.sh`.
 
@@ -88,8 +103,8 @@ When bumping a version, change it in `mise.toml` and in the shebangs together.
 Every tool should feel like it belongs to the same family:
 
 - **Colour** — use it to structure output (headings, success, warning, error,
-  dim detail). Bash tools source `bash/lib/common.sh` for the palette; other
-  languages get an equivalent lib.
+  dim detail). Bash tools source `bash/lib/common.sh` for the palette; Python
+  uses `python/lib/scriptlib.py` (rich) and Node `node/lib/ui.mjs`.
 - **Emojis** — express *activity* (🔍 scanning, ⏳ waiting, 🌿 branches), *outcome*
   (✅ success, ⚠️ warning, ❌ error, 🗑️ deleted), and *stats* (📊 counts). Keep them
   meaningful, not decorative noise.
@@ -103,6 +118,31 @@ Every tool should feel like it belongs to the same family:
 - **Safety** — confirm before anything irreversible; support a way to review before
   acting; exit cleanly (non-zero on error) and leave no partial state.
 
+## Composable tools (stdout is data, stderr is for humans)
+
+Tools that produce data are built to pipe into each other
+(`yt-transcript URL | summarise`, `ytdl --audio URL | transcribe`):
+
+- **stdout carries only the data** — text, or file paths one per line. Every
+  spinner, progress bar, emoji and error goes to **stderr** (Python:
+  `scriptlib.console`, which is a stderr `rich.Console`; write data with `emit`).
+- Text flows through pipes; binary media is passed as a **file path**.
+- A tool that prints decoration in a terminal but paths when piped decides by
+  `sys.stdout.isatty()` (see `ytdl`).
+- Read input from a file argument or stdin; refuse an interactive stdin with a
+  usage hint rather than hanging (`scriptlib.read_input`).
+- Cache paid or slow work in `~/.cache/scripts/<kind>/` keyed by content hash or
+  ID, with a `--no-cache` flag.
+- Compositions of other tools are small bash scripts (see `bash/ai/yt-summary`);
+  Python tools that need another tool call it by path via `scriptlib.tool(name)`.
+
+## Secrets: `.env`
+
+API keys live in `.env` at the repo root, which is **gitignored and must never be
+committed**; `.env.example` (committed) lists the variable names. Tools load it
+with `scriptlib.load_env()` from any directory; variables already set in the
+shell take priority. Never print a key, and check `git status` before committing.
+
 ## Optional dependency: gum
 
 [`gum`](https://github.com/charmbracelet/gum) (Charmbracelet) is a **recommended but
@@ -111,6 +151,19 @@ interactive dropdowns (`menu`), confirmations (`confirm`), and spinners
 (`run_with_spinner`). When it's absent, every helper falls back to a pure-bash
 implementation, so tools must never *require* it. `install.sh` detects it and
 prints the `brew install gum` hint if missing.
+
+Every language has the same gum-backed prompt helpers, each with a fallback:
+
+| | single choice | multi choice | yes/no | spinner |
+| --- | --- | --- | --- | --- |
+| bash (`common.sh`) | `menu` | `multi_select` | `confirm` | `run_with_spinner` |
+| python (`scriptlib`) | `choose` | — | `confirm` | `console.status` (rich) |
+| node (`ui.mjs`) | `choose` | — | `confirm` | `withSpinner`, `progressBar` |
+
+Prompts talk to `/dev/tty`, so they work mid-pipeline; with no terminal they
+return the default (or cancel) instead of blocking. Use a prompt where it saves
+the user from a surprise (spending money, deleting something, a guess), not
+for its own sake. Non-interactive runs must still do something sensible.
 
 Rule of thumb: reach for a CLI library for **interactive** flair (pickers, forms,
 spinners) behind a capability check with a graceful fallback — never make a tool

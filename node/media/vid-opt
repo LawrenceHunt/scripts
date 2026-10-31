@@ -3,17 +3,21 @@
 import fs from "fs";
 import path from "path";
 import { spawn, spawnSync } from "child_process";
+import {
+  C, die, dim, error, formatBytes, formatDuration, heading, info, progressBar, prog, sizeChange, stat,
+  success, warn,
+} from "../lib/ui.mjs";
 
 const SUPPORTED = new Set([".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"]);
 
 const USAGE = `Usage:
-  vid-opt <input-file-or-folder> [output-file-or-folder] [options]
+  ${prog()} <input-file-or-folder> [output-file-or-folder] [options]
 
 Examples:
-  vid-opt ./videos/big.mov
-  vid-opt ./videos/big.mov ./dist
-  vid-opt ./videos/big.mov --format both --width 1280 --crf 28 --max-fps 30
-  vid-opt ./videos ./videos/optimized --format mp4
+  ${prog()} ./videos/big.mov
+  ${prog()} ./videos/big.mov ./dist
+  ${prog()} ./videos/big.mov --format both --width 1280 --crf 28 --max-fps 30
+  ${prog()} ./videos ./videos/optimized --format mp4
 
 Options:
   --format <mp4|webm|both>    Output format(s). Default: mp4
@@ -30,17 +34,6 @@ Notes:
   - Requires ffmpeg + ffprobe on PATH. macOS: brew install ffmpeg
   - MP4 output uses H.264 + AAC with "faststart" for web playback.
 `;
-
-function formatBytes(bytes) {
-  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
-  const k = 1024;
-  const sizes = ["B", "KB", "MB", "GB", "TB"];
-  const i = Math.min(
-    sizes.length - 1,
-    Math.floor(Math.log(bytes) / Math.log(k))
-  );
-  return `${Math.round((bytes / Math.pow(k, i)) * 100) / 100} ${sizes[i]}`;
-}
 
 function parseArgs(argv) {
   const args = {
@@ -136,19 +129,50 @@ function assertFfmpegAvailable() {
     ffmpeg.status !== 0 ||
     ffprobe.status !== 0
   ) {
-    console.error("Error: ffmpeg/ffprobe not found on PATH.\n");
-    console.error("Install on macOS with: brew install ffmpeg\n");
+    error("ffmpeg/ffprobe not found on PATH.");
+    dim("   Install on macOS with: brew install ffmpeg");
     process.exit(1);
   }
 }
 
-function run(cmd, args) {
+// runFfmpeg(args, label, durationSec) — run ffmpeg quietly, drawing a progress
+// bar from its -progress output. Rejects with ffmpeg's error text on failure.
+function runFfmpeg(args, label, durationSec) {
   return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { stdio: "inherit" });
-    child.on("error", reject);
+    const started = Date.now();
+    const bar = progressBar(label);
+    const child = spawn(
+      "ffmpeg",
+      ["-loglevel", "error", "-nostats", "-progress", "pipe:1", ...args],
+      { stdio: ["ignore", "pipe", "pipe"] }
+    );
+    let err = "";
+    let buf = "";
+    let speed = "";
+    child.stdout.on("data", (d) => {
+      buf += d.toString("utf8");
+      const lines = buf.split("\n");
+      buf = lines.pop();
+      for (const line of lines) {
+        const [key, value] = line.split("=");
+        if (key === "speed") speed = value.trim();
+        if (key === "out_time_us" && durationSec > 0) {
+          const fraction = Number(value) / 1e6 / durationSec;
+          const elapsed = Date.now() - started;
+          const eta = fraction > 0.02 ? formatDuration(elapsed / fraction - elapsed) : "…";
+          bar.update(fraction, `${speed && speed !== "N/A" ? `${speed} · ` : ""}ETA ${eta}`);
+        }
+      }
+    });
+    child.stderr.on("data", (d) => (err += d.toString("utf8")));
+    child.on("error", (e) => {
+      bar.done();
+      reject(e);
+    });
     child.on("close", (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`${cmd} exited with code ${code}`));
+      bar.done();
+      if (code === 0) resolve(Date.now() - started);
+      else reject(new Error(`ffmpeg exited with code ${code}${err.trim() ? `: ${err.trim()}` : ""}`));
     });
   });
 }
@@ -191,16 +215,19 @@ function parseFps(rate) {
   return n / d;
 }
 
+function durationOf(meta) {
+  return Number(meta?.format?.duration) || Number(meta?.video?.duration) || 0;
+}
+
 function makeOutputName(inputFile, suffix, ext) {
   const base = path.basename(inputFile, path.extname(inputFile));
   return `${base}.${suffix}.${ext}`;
 }
 
-function ensureWritableTarget(outFile, overwrite) {
-  if (!fs.existsSync(outFile)) return;
-  if (!overwrite) {
-    throw new Error(`Output already exists (use --overwrite): ${outFile}`);
-  }
+// canWrite(outFile, overwrite) — false (skip) if the output exists and
+// --overwrite wasn't given.
+function canWrite(outFile, overwrite) {
+  return overwrite || !fs.existsSync(outFile);
 }
 
 async function encodeMp4(inputFile, outFile, opts, meta) {
@@ -253,9 +280,7 @@ async function encodeMp4(inputFile, outFile, opts, meta) {
     outFile,
   ];
 
-  // Only overwrite if requested; we still pass -y for non-interactive runs.
-  ensureWritableTarget(outFile, opts.overwrite);
-  await run("ffmpeg", args);
+  return runFfmpeg(args, "🎞️  mp4 ", durationOf(meta));
 }
 
 async function encodeWebmVp9(inputFile, outFile, opts, meta) {
@@ -296,8 +321,7 @@ async function encodeWebmVp9(inputFile, outFile, opts, meta) {
     outFile,
   ];
 
-  ensureWritableTarget(outFile, opts.overwrite);
-  await run("ffmpeg", args);
+  return runFfmpeg(args, "🎞️  webm", durationOf(meta));
 }
 
 async function makePoster(inputFile, outFile, opts) {
@@ -317,15 +341,13 @@ async function makePoster(inputFile, outFile, opts) {
     outFile,
   ];
 
-  ensureWritableTarget(outFile, opts.overwrite);
-  await run("ffmpeg", args);
+  return runFfmpeg(args, "🖼️  poster", 0);
 }
 
 async function optimizeOne(inputFile, outputHint, opts) {
   const inputSize = fs.statSync(inputFile).size;
   const meta = await probe(inputFile);
 
-  const outputs = [];
   const outDir =
     outputHint &&
     fs.existsSync(outputHint) &&
@@ -348,57 +370,68 @@ async function optimizeOne(inputFile, outputHint, opts) {
   const wantMp4 = format === "mp4" || format === "both";
   const wantWebm = format === "webm" || format === "both";
 
+  const jobs = [];
   if (wantMp4) {
     const outFile =
       baseOutputFile() &&
       path.extname(baseOutputFile()).toLowerCase() === ".mp4"
         ? baseOutputFile()
         : path.join(outBaseDir, makeOutputName(inputFile, "web", "mp4"));
-    console.log(
-      `\nEncoding MP4: ${path.basename(inputFile)} → ${path.basename(outFile)}`
-    );
-    await encodeMp4(inputFile, outFile, opts, meta);
-    outputs.push(outFile);
+    jobs.push({ kind: "MP4", outFile, run: () => encodeMp4(inputFile, outFile, opts, meta) });
   }
-
   if (wantWebm) {
-    const outFile = path.join(
-      outBaseDir,
-      makeOutputName(inputFile, "web", "webm")
-    );
-    console.log(
-      `\nEncoding WebM: ${path.basename(inputFile)} → ${path.basename(outFile)}`
-    );
-    await encodeWebmVp9(inputFile, outFile, opts, meta);
-    outputs.push(outFile);
+    const outFile = path.join(outBaseDir, makeOutputName(inputFile, "web", "webm"));
+    jobs.push({ kind: "WebM", outFile, run: () => encodeWebmVp9(inputFile, outFile, opts, meta) });
   }
-
   if (opts.poster) {
-    const outFile = path.join(
-      outBaseDir,
-      makeOutputName(inputFile, "poster", "jpg")
-    );
-    console.log(
-      `\nPoster: ${path.basename(inputFile)} → ${path.basename(outFile)}`
-    );
-    await makePoster(inputFile, outFile, opts);
-    outputs.push(outFile);
+    const outFile = path.join(outBaseDir, makeOutputName(inputFile, "poster", "jpg"));
+    jobs.push({ kind: "Poster", outFile, run: () => makePoster(inputFile, outFile, opts) });
   }
 
-  const outputBytes = outputs
-    .filter((p) => fs.existsSync(p))
-    .reduce((sum, p) => sum + fs.statSync(p).size, 0);
-  const reduction =
-    outputBytes > 0 ? ((1 - outputBytes / inputSize) * 100).toFixed(1) : "0.0";
-
+  const name = path.basename(inputFile);
+  const v = meta.video || {};
   console.log(
-    `\n✓ ${path.basename(inputFile)}: ${formatBytes(inputSize)} → ${formatBytes(
-      outputBytes
-    )} total (${reduction}% reduction)`
+    `${C.bold}${C.cyan}🎬 ${name}${C.reset} ${C.dim}${formatBytes(inputSize)} · ` +
+      `${v.width ?? "?"}×${v.height ?? "?"} · ${formatDuration(durationOf(meta) * 1000)}${C.reset}`
   );
+
+  const outputs = [];
+  let skipped = 0;
+  for (const job of jobs) {
+    if (!canWrite(job.outFile, opts.overwrite)) {
+      warn(`${job.kind}: ${path.basename(job.outFile)} already exists — skipped (use --overwrite)`);
+      skipped += 1;
+      continue;
+    }
+    const ms = await job.run();
+    const size = fs.statSync(job.outFile).size;
+    success(
+      `${job.kind}: ${path.basename(job.outFile)} ${C.dim}${formatBytes(size)} · ${formatDuration(ms)}${C.reset}`
+    );
+    outputs.push(job.outFile);
+  }
+
+  const outputBytes = outputs.reduce((sum, p) => sum + fs.statSync(p).size, 0);
+  if (outputs.length) info(`${name}: ${sizeChange(inputSize, outputBytes)} total`, "📦");
+  console.log();
+  return { inputSize, outputBytes, written: outputs.length, skipped };
+}
+
+function printHeader(inputPath, outLabel, opts, count) {
+  heading(`${prog()} · optimising video for the web`, "🎥");
+  info(`Input:    ${C.bold}${inputPath}${C.reset}`);
+  info(`Output:   ${C.bold}${outLabel}${C.reset}`);
+  info(
+    `Settings: ${opts.format} · max ${opts.width}px · crf ${opts.crf} · ${opts.preset} · ` +
+      `≤${opts.maxFps}fps · audio ${opts.audioBitrate}${opts.poster ? " · poster" : ""}` +
+      `${opts.overwrite ? " · overwrite" : ""}`
+  );
+  info(`Found ${count} video(s)`, "🔍");
+  console.log();
 }
 
 async function processPath(inputPath, outputPath, opts) {
+  if (!fs.existsSync(inputPath)) die(`Input not found: ${inputPath}`);
   const stats = fs.statSync(inputPath);
 
   if (stats.isFile()) {
@@ -407,8 +440,8 @@ async function processPath(inputPath, outputPath, opts) {
         `Unsupported input extension: ${path.extname(inputPath)}`
       );
     }
-    await optimizeOne(inputPath, outputPath, opts);
-    return;
+    printHeader(inputPath, outputPath || path.dirname(inputPath), opts, 1);
+    return [await optimizeOne(inputPath, outputPath, opts)];
   }
 
   if (!stats.isDirectory()) {
@@ -421,17 +454,19 @@ async function processPath(inputPath, outputPath, opts) {
     .map((file) => path.join(inputPath, file));
 
   if (files.length === 0) {
-    console.log("No supported videos found in directory.");
-    return;
+    warn("No supported videos found in directory.");
+    return [];
   }
 
   const outDir = outputPath || path.join(inputPath, "optimized");
   fs.mkdirSync(outDir, { recursive: true });
 
-  console.log(`Optimising ${files.length} video(s)...`);
+  printHeader(inputPath, outDir, opts, files.length);
+  const results = [];
   for (const f of files) {
-    await optimizeOne(f, outDir, opts);
+    results.push(await optimizeOne(f, outDir, opts));
   }
+  return results;
 }
 
 const args = parseArgs(process.argv.slice(2));
@@ -442,9 +477,24 @@ if (!args.inputPath) {
 
 assertFfmpegAvailable();
 
+const started = Date.now();
 processPath(args.inputPath, args.outputPath, args)
-  .then(() => console.log("\nDone."))
+  .then((results) => {
+    if (!results.length) return;
+    const totalIn = results.reduce((sum, r) => sum + r.inputSize, 0);
+    const totalOut = results.reduce((sum, r) => sum + r.outputBytes, 0);
+    const written = results.reduce((sum, r) => sum + r.written, 0);
+    const skipped = results.reduce((sum, r) => sum + r.skipped, 0);
+    stat("video(s) processed", results.length);
+    stat("output file(s) written", written);
+    if (skipped) stat("skipped (already exist)", skipped);
+    if (written) {
+      info(`Total: ${sizeChange(totalIn, totalOut)}`, "📦");
+      if (totalIn > totalOut) info(`Saved ${C.bold}${formatBytes(totalIn - totalOut)}${C.reset}`, "💾");
+    }
+    success(`Done in ${formatDuration(Date.now() - started)}. 🎉`);
+  })
   .catch((err) => {
-    console.error(`\nError: ${err.message}`);
-    process.exit(1);
+    console.log();
+    die(err.message);
   });

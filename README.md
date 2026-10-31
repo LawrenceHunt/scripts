@@ -16,6 +16,9 @@ cd scripts
 aliases it declares) and tells you if that directory is not on your `PATH`. No `sudo`
 needed. Re-run it after adding a tool.
 
+API keys go in `.env` at the repo root (gitignored); copy `.env.example` to start.
+The AI tools read it from wherever you run them.
+
 Python and Node tools need [mise](https://mise.jdx.dev) (`brew install mise`). Each
 one's shebang asks mise for the exact runtime it needs, so they work from any
 directory regardless of what's active in your shell. `mise run install` does the
@@ -32,6 +35,10 @@ falls back to plain bash, so no tool ever hard-fails for want of it.
 | `gprune` | Prunes local git branches whose remote branch has been deleted |
 | `portkill` (`pk`) | Shows what is listening on your ports and kills it |
 | `ytdl` | Downloads YouTube videos at the best available resolution |
+| `yt-transcript` | Prints a YouTube video's transcript (captions, or transcribes the audio) |
+| `transcribe` | Transcribes an audio or video file to text (OpenAI) |
+| `summarise` | Summarises text from stdin or a file (Claude or OpenAI) |
+| `yt-summary` | `yt-transcript URL \| summarise`, in one command |
 | `img-opt` | Resizes and converts images (webp by default) |
 | `vid-opt` | Re-encodes video for the web (H.264/AAC, optional webm + poster) |
 | `glb-opt` | Shrinks `.glb` 3D models (simplify, quantise, meshopt, webp textures) |
@@ -74,11 +81,35 @@ app-internal rather than a server you started; the hidden count is always printe
 ```sh
 ytdl <url> [<url> ...]        # save into ~/Movies
 ytdl -o . <url>               # save somewhere else
+ytdl --audio <url>            # audio only (.m4a)
 ```
 
 YouTube only serves high resolutions as separate video and audio streams, so `ytdl`
 downloads the best mp4 video and audio and merges them with ffmpeg (stream copy, no
-re-encode). Existing files are skipped.
+re-encode). Existing files are skipped. When stdout is piped, it prints the saved
+paths, so `ytdl --audio URL | transcribe` works.
+
+### AI tools: yt-transcript, transcribe, summarise, yt-summary
+
+Small pieces that pipe into each other. Data goes to stdout; progress goes to stderr.
+
+```sh
+yt-summary URL                              # transcript → 500-word summary
+yt-summary URL --words 150 --prompt "just the investing advice"
+yt-transcript URL > talk.txt                # captions if available, else Whisper
+transcribe meeting.m4a | summarise          # any local audio or video
+summarise notes.txt --provider anthropic    # force a provider
+```
+
+- `yt-transcript` uses the video's own captions when it can: instant and free. Without
+  them it runs `ytdl --audio` then `transcribe`. `--no-captions` forces that route.
+- `transcribe` re-encodes to speech-quality mono and splits into 10-minute chunks
+  that run in parallel (default model `gpt-4o-transcribe`).
+- `summarise` uses Claude (`claude-opus-5-5`) when `ANTHROPIC_API_KEY` is set,
+  otherwise OpenAI (`gpt-5.5`). Override with `--provider`, `--model` or
+  `SUMMARISE_PROVIDER`. It drops sponsor reads and filler and streams as it writes.
+- Transcripts are cached in `~/.cache/scripts/`, so re-summarising with a different
+  prompt costs nothing for the transcript. `--no-cache` skips the cache.
 
 ### img-opt / vid-opt / glb-opt / pdf-opt
 
@@ -104,13 +135,19 @@ bash/
     gprune
   net/
     portkill
+  ai/
+    yt-summary
 node/
   package.json         # shared deps (node_modules is gitignored)
   media/
     img-opt  vid-opt  glb-opt  pdf-opt
 python/
+  lib/
+    scriptlib.py       # shared console/.env/cache helpers
   media/
     ytdl               # deps declared inline (PEP 723)
+  ai/
+    yt-transcript  transcribe  summarise
 ```
 
 A tool is an executable file with no extension — the filename is the command name.

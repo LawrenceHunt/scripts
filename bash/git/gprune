@@ -161,10 +161,9 @@ else
     0) TO_DELETE=("${STALE[@]}"); info "Selected: all $COUNT branch(es)." ;;
     1)
       heading "Select branches to delete" "🔎"
-      for branch in "${STALE[@]}"; do
-        if confirm "Delete ${branch}?" n; then
-          TO_DELETE+=("$branch")
-        fi
+      multi_select "Which branches? (space to toggle, Enter to confirm)" "${STALE[@]}"
+      for i in ${MULTI_SELECTED[@]+"${MULTI_SELECTED[@]}"}; do
+        TO_DELETE+=("${STALE[$i]}")
       done
       ;;
     *) info "Cancelled — nothing deleted."; exit 0 ;;

@@ -187,6 +187,40 @@ menu() {
   return 0
 }
 
+# multi_select "prompt" label1 label2 ... — pick any number of items.
+# With gum: a checklist (space toggles, a selects all, Enter confirms). Without
+# gum: a y/N confirm per item. Sets the global array MULTI_SELECTED to the
+# chosen 0-based indexes (empty if nothing chosen, cancelled or no terminal).
+multi_select() {
+  local prompt="$1"; shift
+  local options=("$@")
+  local i choice
+  MULTI_SELECTED=()
+
+  _tty_ok || return 0
+
+  if $HAVE_GUM; then
+    # As in menu(): items go in through the pipe; gum reads keys from /dev/tty.
+    local chosen
+    chosen="$(printf '%s\n' "${options[@]}" \
+      | gum choose --no-limit --header "$prompt" \
+          --cursor '❯ ' --selected-prefix '✓ ' --unselected-prefix '  ')" || return 0
+    while IFS= read -r choice; do
+      [[ -z "$choice" ]] && continue
+      for i in "${!options[@]}"; do
+        [[ "${options[$i]}" == "$choice" ]] && { MULTI_SELECTED+=("$i"); break; }
+      done
+    done <<< "$chosen"
+    return 0
+  fi
+
+  printf '%s❓ %s%s\n' "$C_YELLOW" "$C_RESET" "$prompt"
+  for i in "${!options[@]}"; do
+    confirm "  ${options[$i]}?" n < /dev/tty && MULTI_SELECTED+=("$i")
+  done
+  return 0
+}
+
 # choose "question" "keys" — single-key choice from a set (e.g. "asn").
 # Echoes the chosen (lowercased) key to stdout.
 choose() {

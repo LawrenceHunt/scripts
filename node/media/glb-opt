@@ -2,7 +2,8 @@
 
 import fs from "fs";
 import path from "path";
-import { NodeIO } from "@gltf-transform/core";
+import { Logger, NodeIO } from "@gltf-transform/core";
+import { ALL_EXTENSIONS } from "@gltf-transform/extensions";
 import {
   dedup,
   textureCompress,
@@ -13,29 +14,53 @@ import {
   weld,
   reorder,
 } from "@gltf-transform/functions";
-import { MeshoptSimplifier, MeshoptEncoder } from "meshoptimizer";
+import { MeshoptDecoder, MeshoptEncoder, MeshoptSimplifier } from "meshoptimizer";
+import {
+  C, die, formatBytes, formatDuration, heading, info, prog, sizeChange, stat, success, warn, withSpinner,
+} from "../lib/ui.mjs";
+
+const USAGE = `Usage:
+  ${prog()} <input-file-or-folder> [output-file-or-folder]
+
+Shrinks .glb models: prune, dedup, weld, reorder, quantize, simplify to 20% of
+triangles, meshopt compression, and webp textures resized to 1024px.
+
+  ${prog()} model.glb                  writes model.optimized.glb
+  ${prog()} model.glb out.glb
+  ${prog()} ./models                   writes ./models/optimized/*.glb
+  ${prog()} ./models ./dist`;
 
 const [, , inputPath, outputPath] = process.argv;
 
+if (inputPath === "-h" || inputPath === "--help") {
+  console.log(USAGE);
+  process.exit(0);
+}
+
 if (!inputPath) {
-  console.error(
-    "Usage: glb-opt <input-file-or-folder> [output-file-or-folder]"
-  );
+  console.error(USAGE);
   process.exit(1);
 }
 
-// Register meshoptimizer dependencies with NodeIO
-const io = new NodeIO().registerDependencies({
+if (!fs.existsSync(inputPath)) die(`Input not found: ${inputPath}`);
+
+// Register every glTF extension so the ones the transforms add (meshopt
+// compression, quantization, webp textures) are actually written, and inputs
+// that already use them can be read. Without this they're silently dropped.
+const io = new NodeIO().registerExtensions(ALL_EXTENSIONS).registerDependencies({
+  "meshopt.decoder": MeshoptDecoder,
   "meshopt.simplifier": MeshoptSimplifier,
   "meshopt.encoder": MeshoptEncoder,
 });
 
 async function optimizeGLB(inputFile, outputFile) {
-  try {
-    console.log(`Optimizing: ${path.basename(inputFile)}...`);
-
+  const name = path.basename(inputFile);
+  let result;
+  await withSpinner(name, async () => {
     // Read the GLB file
     const document = await io.read(inputFile);
+    // Keep gltf-transform's per-step info logs from breaking the spinner line.
+    document.setLogger(new Logger(Logger.Verbosity.WARN));
 
     // Apply optimizations
     await document.transform(
@@ -80,30 +105,22 @@ async function optimizeGLB(inputFile, outputFile) {
 
     const inputSize = fs.statSync(inputFile).size;
     const outputSize = fs.statSync(outputFile).size;
-    const reduction = ((1 - outputSize / inputSize) * 100).toFixed(1);
-
-    console.log(
-      `✓ ${path.basename(inputFile)}: ${formatBytes(inputSize)} → ${formatBytes(
-        outputSize
-      )} (${reduction}% reduction)`
-    );
-
-    return { inputSize, outputSize };
-  } catch (err) {
-    console.error(
-      `✗ Failed to optimize ${path.basename(inputFile)}: ${err.message}`
-    );
-    throw err;
-  }
+    result = { inputSize, outputSize };
+    return { label: `${name} → ${path.basename(outputFile)}  ${sizeChange(inputSize, outputSize)}` };
+  });
+  return result;
 }
 
-function formatBytes(bytes) {
-  if (bytes === 0) return "0 B";
-  const k = 1024;
-  const sizes = ["B", "KB", "MB", "GB"];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + " " + sizes[i];
+function printHeader(input, output, count) {
+  heading(`${prog()} · optimising 3D models`, "🧊");
+  info(`Input:    ${C.bold}${input}${C.reset}`);
+  info(`Output:   ${C.bold}${output}${C.reset}`);
+  info("Settings: simplify 20% · quantize · meshopt high · webp textures ≤1024px");
+  info(`Found ${count} model(s)`, "🔍");
+  console.log();
 }
+
+const started = Date.now();
 
 async function processPath(inputPath, outputPath) {
   const stats = fs.statSync(inputPath);
@@ -111,12 +128,13 @@ async function processPath(inputPath, outputPath) {
   if (stats.isFile()) {
     // Single file
     if (!inputPath.toLowerCase().endsWith(".glb")) {
-      console.error("Error: Input file must be a .glb file");
-      process.exit(1);
+      die("Input file must be a .glb file");
     }
 
     const output = outputPath || inputPath.replace(/\.glb$/i, ".optimized.glb");
-    await optimizeGLB(inputPath, output);
+    printHeader(inputPath, output, 1);
+    const result = await optimizeGLB(inputPath, output);
+    return [result];
   } else if (stats.isDirectory()) {
     // Directory of files
     const files = fs
@@ -125,45 +143,35 @@ async function processPath(inputPath, outputPath) {
       .map((file) => path.join(inputPath, file));
 
     if (files.length === 0) {
-      console.log("No .glb files found in directory.");
+      warn("No .glb files found in directory.");
       process.exit(0);
     }
 
     const outputDir = outputPath || path.join(inputPath, "optimized");
     fs.mkdirSync(outputDir, { recursive: true });
+    printHeader(inputPath, outputDir, files.length);
 
-    console.log(`Optimizing ${files.length} GLB file(s)...\n`);
-
-    let totalInputSize = 0;
-    let totalOutputSize = 0;
-
+    const results = [];
     for (const file of files) {
       const outputFile = path.join(outputDir, path.basename(file));
-      const result = await optimizeGLB(file, outputFile);
-      totalInputSize += result.inputSize;
-      totalOutputSize += result.outputSize;
+      results.push(await optimizeGLB(file, outputFile));
     }
-
-    const totalReduction = (
-      (1 - totalOutputSize / totalInputSize) *
-      100
-    ).toFixed(1);
-    console.log(
-      `\nTotal: ${formatBytes(totalInputSize)} → ${formatBytes(
-        totalOutputSize
-      )} (${totalReduction}% reduction)`
-    );
+    return results;
   } else {
-    console.error("Error: Input path must be a file or directory");
-    process.exit(1);
+    die("Input path must be a file or directory");
   }
 }
 
 processPath(inputPath, outputPath)
-  .then(() => {
-    console.log("\nDone.");
+  .then((results) => {
+    const totalIn = results.reduce((sum, r) => sum + r.inputSize, 0);
+    const totalOut = results.reduce((sum, r) => sum + r.outputSize, 0);
+    console.log();
+    stat("optimised", results.length);
+    info(`Total: ${sizeChange(totalIn, totalOut)}`, "📦");
+    if (totalIn > totalOut) info(`Saved ${C.bold}${formatBytes(totalIn - totalOut)}${C.reset}`, "💾");
+    success(`Done in ${formatDuration(Date.now() - started)}. 🎉`);
   })
   .catch((err) => {
-    console.error("\nError:", err.message);
-    process.exit(1);
+    die(err.message);
   });

@@ -5,6 +5,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import fs from "node:fs";
 import path from "node:path";
+import { C, die, formatBytes, formatDuration, info, heading, prog, sizeChange, stat, success, withSpinner } from "../lib/ui.mjs";
 
 /**
  * Compress a PDF using Ghostscript
@@ -70,8 +71,8 @@ export function compressPDF(inputFile, outputFile, quality = "/ebook") {
 const QUALITY_PRESETS = new Set(["/screen", "/ebook", "/printer", "/prepress"]);
 
 const USAGE = `Usage:
-  pdf-opt <input-file> [output-file] [--quality <preset>]
-  pdf-opt --input <input-file> [--output <output-file>] [--quality <preset>]
+  ${prog()} <input-file> [output-file] [--quality <preset>]
+  ${prog()} --input <input-file> [--output <output-file>] [--quality <preset>]
 
 Quality presets:
   /screen   Lowest file size, lowest quality
@@ -143,10 +144,10 @@ async function main() {
   }
 
   if (!QUALITY_PRESETS.has(args.quality)) {
-    console.error(`Invalid quality preset: ${args.quality}`);
-    console.error(`Supported presets: ${Array.from(QUALITY_PRESETS).join(", ")}`);
-    process.exit(1);
+    die(`Invalid quality preset: ${args.quality} (supported: ${Array.from(QUALITY_PRESETS).join(", ")})`);
   }
+
+  if (!fs.existsSync(args.inputFile)) die(`Input not found: ${args.inputFile}`);
 
   const outputFile =
     args.outputFile ||
@@ -157,8 +158,27 @@ async function main() {
       ) || ".pdf"}`,
     );
 
-  await compressPDF(args.inputFile, outputFile, args.quality);
-  console.log(`Compressed PDF written to: ${outputFile}`);
+  heading(`${prog()} · compressing PDF`, "📄");
+  info(`Input:    ${C.bold}${args.inputFile}${C.reset}`);
+  info(`Output:   ${C.bold}${outputFile}${C.reset}`);
+  info(`Settings: Ghostscript ${args.quality} preset`);
+  console.log();
+
+  const started = Date.now();
+  const name = path.basename(args.inputFile);
+  let before = 0;
+  let after = 0;
+  await withSpinner(name, async () => {
+    await compressPDF(args.inputFile, outputFile, args.quality);
+    before = fs.statSync(args.inputFile).size;
+    after = fs.statSync(outputFile).size;
+    return { label: `${name} → ${path.basename(outputFile)}  ${sizeChange(before, after)}` };
+  });
+
+  console.log();
+  stat("compressed", 1);
+  if (before > after) info(`Saved ${C.bold}${formatBytes(before - after)}${C.reset}`, "💾");
+  success(`Done in ${formatDuration(Date.now() - started)}. 🎉`);
 }
 
 const isCliEntrypoint =
@@ -167,7 +187,6 @@ const isCliEntrypoint =
 
 if (isCliEntrypoint) {
   main().catch((err) => {
-    console.error(`Error: ${err.message}`);
-    process.exit(1);
+    die(err.message);
   });
 }

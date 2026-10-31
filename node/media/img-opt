@@ -5,6 +5,9 @@ import { spawnSync } from "child_process";
 import os from "os";
 import path from "path";
 import sharp from "sharp";
+import {
+  C, die, dim, error, formatBytes, formatDuration, heading, info, prog, sizeChange, stat, success, warn, withSpinner,
+} from "../lib/ui.mjs";
 
 const SUPPORTED_INPUT_FORMATS = [
   "jpg",
@@ -44,6 +47,17 @@ function convertHeifToTempPng(sourcePath) {
   return tempPath;
 }
 
+const USAGE = `Usage:
+  ${prog()} --input <file-or-folder> [--output-dir <folder>] [--output-fmt <format>] [--quality <1-100>]
+
+Options:
+  --input <path>        Image file, or a folder of images
+  --output-dir <dir>    Where to write (default: an "optimized" folder next to the input)
+  --output-fmt <fmt>    ${SUPPORTED_OUTPUT_FORMATS.join(" | ")} (default: webp)
+  --quality <1-100>     Encoder quality (default: 75)
+
+Images wider than 3000px are scaled down. HEIC/HEIF is decoded with macOS sips.`;
+
 function parseArgs(argv) {
   let inputPath = null;
   let outputDir = null;
@@ -76,6 +90,11 @@ function parseArgs(argv) {
       i += 1;
       continue;
     }
+
+    if (arg === "--help" || arg === "-h") {
+      console.log(USAGE);
+      process.exit(0);
+    }
   }
 
   return {
@@ -92,11 +111,11 @@ const { inputPath, outputDir: outputDirArg, outputFormat, quality } = parseArgs(
 let outputDir = outputDirArg;
 
 if (!inputPath) {
-  console.error(
-    "Usage: img-opt --input <file-or-folder> [--output-dir <folder>] [--output-fmt <format>] [--quality <1-100>]",
-  );
+  console.error(USAGE);
   process.exit(1);
 }
+
+if (!fs.existsSync(inputPath)) die(`Input not found: ${inputPath}`);
 
 if (!outputDir) {
   const baseDir = fs.statSync(inputPath).isDirectory()
@@ -107,19 +126,15 @@ if (!outputDir) {
 
 const MAX_WIDTH = 3000;
 
-fs.mkdirSync(outputDir, { recursive: true });
-
 if (!SUPPORTED_OUTPUT_FORMATS.includes(outputFormat)) {
-  console.error(`Unsupported output format: ${outputFormat}`);
-  console.error(`Supported formats: ${SUPPORTED_OUTPUT_FORMATS.join(", ")}`);
-  process.exit(1);
+  die(`Unsupported output format: ${outputFormat} (supported: ${SUPPORTED_OUTPUT_FORMATS.join(", ")})`);
 }
 
 if (!Number.isInteger(quality) || quality < 1 || quality > 100) {
-  console.error(`Invalid quality value: ${quality}`);
-  console.error("Quality must be an integer between 1 and 100.");
-  process.exit(1);
+  die(`Invalid quality value: ${quality} — must be an integer between 1 and 100.`);
 }
+
+fs.mkdirSync(outputDir, { recursive: true });
 
 const stats = fs.statSync(inputPath);
 const files = stats.isDirectory()
@@ -132,12 +147,25 @@ const files = stats.isDirectory()
       return SUPPORTED_INPUT_FORMATS.includes(ext);
     });
 
+heading(`${prog()} · optimising images`, "🖼️ ");
+info(`Input:    ${C.bold}${inputPath}${C.reset}`);
+info(`Output:   ${C.bold}${outputDir}${C.reset}`);
+info(`Settings: ${outputFormat} · quality ${quality} · max width ${MAX_WIDTH}px`);
+
 if (files.length === 0) {
-  console.log("No supported images found.");
+  warn("No supported images found.");
+  dim(`   Supported: ${SUPPORTED_INPUT_FORMATS.join(", ")}`);
   process.exit(0);
 }
 
-console.log(`Optimising ${files.length} images…`);
+info(`Found ${files.length} image(s)`, "🔍");
+console.log();
+
+const started = Date.now();
+let done = 0;
+let failed = 0;
+let totalIn = 0;
+let totalOut = 0;
 
 for (const file of files) {
   const sourcePath = stats.isDirectory() ? path.join(inputPath, file) : inputPath;
@@ -147,34 +175,41 @@ for (const file of files) {
   let tempSourcePath = null;
 
   try {
-    const processingPath = isHeifInput ? convertHeifToTempPng(sourcePath) : sourcePath;
-    tempSourcePath = isHeifInput ? processingPath : null;
+    await withSpinner(`${file}`, async () => {
+      const processingPath = isHeifInput ? convertHeifToTempPng(sourcePath) : sourcePath;
+      tempSourcePath = isHeifInput ? processingPath : null;
 
-    const pipeline = sharp(processingPath).resize({
-      width: MAX_WIDTH,
-      withoutEnlargement: true,
+      const pipeline = sharp(processingPath).resize({
+        width: MAX_WIDTH,
+        withoutEnlargement: true,
+      });
+
+      if (outputFormat === "jpeg") {
+        pipeline.jpeg({ quality });
+      } else if (outputFormat === "png") {
+        pipeline.png({ quality });
+      } else if (outputFormat === "tiff") {
+        pipeline.tiff({ quality });
+      } else if (outputFormat === "webp") {
+        pipeline.webp({ quality });
+      } else if (outputFormat === "avif") {
+        pipeline.avif({ quality });
+      } else if (outputFormat === "gif") {
+        pipeline.gif();
+      }
+
+      await pipeline.toFile(outputPath);
+
+      const before = fs.statSync(sourcePath).size;
+      const after = fs.statSync(outputPath).size;
+      totalIn += before;
+      totalOut += after;
+      done += 1;
+      return { label: `${file} → ${path.basename(outputPath)}  ${sizeChange(before, after)}` };
     });
-
-    if (outputFormat === "jpeg") {
-      pipeline.jpeg({ quality });
-    } else if (outputFormat === "png") {
-      pipeline.png({ quality });
-    } else if (outputFormat === "tiff") {
-      pipeline.tiff({ quality });
-    } else if (outputFormat === "webp") {
-      pipeline.webp({ quality });
-    } else if (outputFormat === "avif") {
-      pipeline.avif({ quality });
-    } else if (outputFormat === "gif") {
-      pipeline.gif();
-    }
-
-    await pipeline.toFile(outputPath);
-
-    console.log(`✓ ${file} → ${path.basename(outputPath)}`);
   } catch (err) {
-    console.error(`✗ Failed: ${file}`);
-    console.error(err.message);
+    failed += 1;
+    error(`   ${err.message}`, " ");
   } finally {
     if (tempSourcePath && fs.existsSync(tempSourcePath)) {
       fs.unlinkSync(tempSourcePath);
@@ -182,4 +217,15 @@ for (const file of files) {
   }
 }
 
-console.log("Done.");
+console.log();
+stat("optimised", done);
+if (failed) stat("failed", failed);
+if (done) {
+  info(`Total: ${sizeChange(totalIn, totalOut)}`, "📦");
+  if (totalIn > totalOut) info(`Saved ${C.bold}${formatBytes(totalIn - totalOut)}${C.reset}`, "💾");
+}
+if (failed) {
+  error(`Finished with ${failed} failure(s) in ${formatDuration(Date.now() - started)}.`);
+  process.exit(1);
+}
+success(`Done in ${formatDuration(Date.now() - started)}. 🎉`);
