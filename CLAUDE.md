@@ -24,12 +24,14 @@ Current tree:
 bash/
   lib/
     common.sh          # colours, emojis, spinners, prompts, output helpers
+    summary.sh         # source | summarise [| speak] plumbing for *-summary tools
   git/
     gprune             # prune local branches whose remote is gone
   net/
     portkill           # inspect listening ports and kill what holds them (alias: pk)
   ai/
-    yt-summary         # yt-transcript URL | summarise
+    yt-summary         # yt-transcript URL | summarise [--speak]
+    pdf-summary        # pdf2text FILE | summarise [--speak]
 node/
   package.json         # shared deps for every node tool (node_modules is gitignored)
   lib/
@@ -48,6 +50,8 @@ python/
     yt-transcript      # captions, or ytdl --audio | transcribe as a fallback
     transcribe         # audio/video -> text (OpenAI)
     summarise          # text -> summary (Anthropic or OpenAI, whichever key is set)
+    pdf2text           # PDF -> text (PyMuPDF), flags scanned pages
+    speak              # text -> mp3 (ElevenLabs), quota-aware, chunked + stitched
 ```
 
 When a new language is introduced, mirror this shape (e.g. `python/lib/`,

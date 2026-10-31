@@ -2,8 +2,9 @@
 #
 # yt-summary — summarise a YouTube video: yt-transcript URL | summarise [opts]
 #
-# Any options after the URL are passed to summarise (--words, --prompt,
-# --provider, --model).
+# Options after the URL go to summarise (--words, --prompt, --provider,
+# --model). Add --speak to also read the summary aloud (speak --play), saving
+# the mp3 next to where you ran it.
 #
 set -euo pipefail
 
@@ -18,12 +19,14 @@ REAL_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 REPO_DIR="$(cd "$REAL_DIR/../.." && pwd)"
 # shellcheck source=../lib/common.sh
 source "$REAL_DIR/../lib/common.sh"
+# shellcheck source=../lib/summary.sh
+source "$REAL_DIR/../lib/summary.sh"
 
 if [[ $# -lt 1 || "$1" == "-h" || "$1" == "--help" ]]; then
-  printf 'Usage: %s <youtube-url> [summarise options]\n' "$(basename "$0")"
-  printf '  e.g. %s URL --words 200 --prompt "focus on the advice"\n' "$(basename "$0")"
+  printf 'Usage: %s <youtube-url> [--speak] [summarise options]\n' "$(basename "$0")"
+  printf '  e.g. %s URL --words 200 --prompt "focus on the advice" --speak\n' "$(basename "$0")"
   exit 1
 fi
 
 url="$1"; shift
-"$REPO_DIR/python/ai/yt-transcript" "$url" | "$REPO_DIR/python/ai/summarise" "$@"
+summarise_with_speech "yt-summary" "$REPO_DIR/python/ai/yt-transcript" "$url" -- "$@"

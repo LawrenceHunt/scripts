@@ -38,7 +38,10 @@ falls back to plain bash, so no tool ever hard-fails for want of it.
 | `yt-transcript` | Prints a YouTube video's transcript (captions, or transcribes the audio) |
 | `transcribe` | Transcribes an audio or video file to text (OpenAI) |
 | `summarise` | Summarises text from stdin or a file (Claude or OpenAI) |
-| `yt-summary` | `yt-transcript URL \| summarise`, in one command |
+| `pdf2text` | Extracts the text of a PDF |
+| `speak` | Turns text into an mp3 with ElevenLabs |
+| `yt-summary` | `yt-transcript URL \| summarise`, in one command (`--speak` to hear it) |
+| `pdf-summary` | `pdf2text FILE \| summarise`, in one command (`--speak` to hear it) |
 | `img-opt` | Resizes and converts images (webp by default) |
 | `vid-opt` | Re-encodes video for the web (H.264/AAC, optional webm + poster) |
 | `glb-opt` | Shrinks `.glb` 3D models (simplify, quantise, meshopt, webp textures) |
@@ -89,7 +92,7 @@ downloads the best mp4 video and audio and merges them with ffmpeg (stream copy,
 re-encode). Existing files are skipped. When stdout is piped, it prints the saved
 paths, so `ytdl --audio URL | transcribe` works.
 
-### AI tools: yt-transcript, transcribe, summarise, yt-summary
+### AI tools: yt-transcript, transcribe, pdf2text, summarise, speak, *-summary
 
 Small pieces that pipe into each other. Data goes to stdout; progress goes to stderr.
 
@@ -99,6 +102,10 @@ yt-summary URL --words 150 --prompt "just the investing advice"
 yt-transcript URL > talk.txt                # captions if available, else Whisper
 transcribe meeting.m4a | summarise          # any local audio or video
 summarise notes.txt --provider anthropic    # force a provider
+pdf-summary book.pdf --pages 1-40 --speak   # summarise chapters, then read it aloud
+pdf2text report.pdf > report.txt
+summarise notes.txt | speak --play          # any text to speech
+speak summary.txt -o out.mp3 --voice Sarah  # or --pick-voice for a menu
 ```
 
 - `yt-transcript` uses the video's own captions when it can: instant and free. Without
@@ -108,8 +115,16 @@ summarise notes.txt --provider anthropic    # force a provider
 - `summarise` uses Claude (`claude-opus-5-5`) when `ANTHROPIC_API_KEY` is set,
   otherwise OpenAI (`gpt-5.5`). Override with `--provider`, `--model` or
   `SUMMARISE_PROVIDER`. It drops sponsor reads and filler and streams as it writes.
-- Transcripts are cached in `~/.cache/scripts/`, so re-summarising with a different
-  prompt costs nothing for the transcript. `--no-cache` skips the cache.
+- `pdf2text` takes `--pages 1-20,25`. It warns about pages with no text layer and
+  stops if the whole PDF is scanned, since that needs OCR first.
+- `speak` uses ElevenLabs (default voice George, `eleven_multilingual_v2`). Before
+  spending, it shows the character count against your remaining quota. It asks
+  first if a job is over 5,000 characters or would exceed the quota (`--yes` skips
+  that; non-interactive runs require it). Long text is split at sentence ends and
+  voiced with its neighbours as context, so the joins sound natural.
+  `--list-voices` lists the voices on your account.
+- Transcripts and speech are cached in `~/.cache/scripts/`, so re-running costs
+  nothing. `--no-cache` skips the cache.
 
 ### img-opt / vid-opt / glb-opt / pdf-opt
 
@@ -136,7 +151,7 @@ bash/
   net/
     portkill
   ai/
-    yt-summary
+    yt-summary  pdf-summary
 node/
   package.json         # shared deps (node_modules is gitignored)
   media/
@@ -147,7 +162,7 @@ python/
   media/
     ytdl               # deps declared inline (PEP 723)
   ai/
-    yt-transcript  transcribe  summarise
+    yt-transcript  transcribe  pdf2text  summarise  speak
 ```
 
 A tool is an executable file with no extension — the filename is the command name.
