@@ -206,6 +206,35 @@ menu() {
   return 0
 }
 
+# filter_menu "prompt" "initial query" label1 label2 ... — like menu(), but you
+# type to narrow the list (gum filter, fuzzy). Falls back to menu() without
+# gum. Sets MENU_INDEX the same way.
+filter_menu() {
+  local prompt="$1" query="$2"
+  shift 2
+  local options=("$@") choice i
+  MENU_INDEX=-1
+
+  if ! $HAVE_GUM || ! _tty_ok; then
+    menu "$prompt" "${options[@]}"
+    return 0
+  fi
+
+  # As in menu(): items go in through the pipe; gum reads keys from /dev/tty.
+  choice="$(printf '%s\n' "${options[@]}" |
+    gum filter --header "$prompt" --value "$query" \
+      --placeholder 'Type to filter…' --indicator '❯')" || return 0
+  # MENU_INDEX is this function's output, read by the calling tool.
+  # shellcheck disable=SC2034
+  for i in "${!options[@]}"; do
+    [[ "${options[$i]}" == "$choice" ]] && {
+      MENU_INDEX=$i
+      break
+    }
+  done
+  return 0
+}
+
 # multi_select "prompt" label1 label2 ... — pick any number of items.
 # With gum: a checklist (space toggles, a selects all, Enter confirms). Without
 # gum: a y/N confirm per item. Sets the global array MULTI_SELECTED to the
@@ -258,6 +287,46 @@ choose() {
     fi
     warn "Please choose one of: $keys"
   done
+}
+
+# ----- Files ----------------------------------------------------------------
+
+# human_kb KB — format a size in KiB (as from `du -k`) as 512K, 3.4M, 1.2G.
+human_kb() {
+  awk -v k="$1" 'BEGIN {
+    split("K M G T", u, " "); i = 1
+    while (k >= 1024 && i < 4) { k /= 1024; i++ }
+    if (i == 1) printf "%dK", k; else printf "%.1f%s", k, u[i]
+  }'
+}
+
+# tildify PATH — PATH with $HOME shortened to ~.
+# (The tilde goes through a variable: bash 3.2 and 5 escape it differently inline.)
+tildify() {
+  local tilde='~'
+  printf '%s' "${1/#"$HOME"/$tilde}"
+}
+
+# discard_paths PERMANENT PATH... — move paths to the Trash (macOS `trash`), or
+# delete them outright when PERMANENT is true. Warns about anything that
+# survived and returns 1 if so.
+discard_paths() {
+  local permanent="$1" p left=0
+  shift
+  if $permanent; then
+    run_with_spinner "Deleting $# item(s)" rm -rf -- "$@" || true
+  else
+    command -v trash >/dev/null 2>&1 ||
+      die "No 'trash' command (it ships with macOS 15+). Use --rm to delete permanently."
+    run_with_spinner "Moving $# item(s) to the Trash" trash "$@" || true
+  fi
+  for p in "$@"; do
+    if [[ -e "$p" || -L "$p" ]]; then
+      warn "Could not remove $(tildify "$p")"
+      left=$((left + 1))
+    fi
+  done
+  [[ $left -eq 0 ]]
 }
 
 # require_cmd BIN — die if a required binary is missing.
