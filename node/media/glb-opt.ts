@@ -17,7 +17,7 @@ import {
 import { MeshoptDecoder, MeshoptEncoder, MeshoptSimplifier } from "meshoptimizer";
 import {
   C, die, formatBytes, formatDuration, heading, info, prog, sizeChange, stat, success, warn, withSpinner,
-} from "../lib/ui.mjs";
+} from "../lib/ui.ts";
 
 const USAGE = `Usage:
   ${prog()} <input-file-or-folder> [output-file-or-folder]

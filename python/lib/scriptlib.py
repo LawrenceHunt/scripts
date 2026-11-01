@@ -66,11 +66,11 @@ def cache_path(kind: str, key: str, suffix: str = ".txt") -> Path:
 
 
 def tool(name: str) -> str:
-    """Absolute path of another tool in this repo, for composing tools."""
-    matches = [p for p in REPO_DIR.glob(f"*/*/{name}") if p.parent.name != "lib"]
-    if not matches:
-        fail(f"Tool not found in repo: {name}")
-    return str(matches[0])
+    """Absolute path of another tool in this repo (by command name), for composing tools."""
+    for path in sorted(REPO_DIR.glob(f"*/*/{name}.*")):
+        if path.parent.name != "lib" and os.access(path, os.X_OK):
+            return str(path)
+    fail(f"Tool not found in repo: {name}")
 
 
 def fail(message: str, hint: str = "", code: int = 1):

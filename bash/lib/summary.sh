@@ -23,7 +23,7 @@ summarise_with_speech() {
   done
 
   if ! $speak; then
-    "$source_tool" "${source_args[@]}" | "$REPO_DIR/python/ai/summarise" ${args[@]+"${args[@]}"}
+    "$source_tool" "${source_args[@]}" | "$REPO_DIR/python/ai/summarise.py" ${args[@]+"${args[@]}"}
     return
   fi
 
@@ -33,7 +33,7 @@ summarise_with_speech() {
   trap "rm -f '$summary_file'" EXIT
 
   "$source_tool" "${source_args[@]}" \
-    | "$REPO_DIR/python/ai/summarise" ${args[@]+"${args[@]}"} \
+    | "$REPO_DIR/python/ai/summarise.py" ${args[@]+"${args[@]}"} \
     | tee "$summary_file"
-  "$REPO_DIR/python/ai/speak" "$summary_file" --play -o "./${stem}-$(date +%Y%m%d-%H%M%S).mp3"
+  "$REPO_DIR/python/ai/speak.py" "$summary_file" --play -o "./${stem}-$(date +%Y%m%d-%H%M%S).mp3"
 }

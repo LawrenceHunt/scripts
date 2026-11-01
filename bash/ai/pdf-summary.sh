@@ -43,4 +43,4 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-summarise_with_speech "$stem" "$REPO_DIR/python/ai/pdf2text" "${source_args[@]}" -- ${rest[@]+"${rest[@]}"}
+summarise_with_speech "$stem" "$REPO_DIR/python/ai/pdf2text.py" "${source_args[@]}" -- ${rest[@]+"${rest[@]}"}

@@ -6,7 +6,7 @@ import { spawn, spawnSync } from "child_process";
 import {
   C, die, dim, error, formatBytes, formatDuration, heading, info, progressBar, prog, sizeChange, stat,
   success, warn,
-} from "../lib/ui.mjs";
+} from "../lib/ui.ts";
 
 const SUPPORTED = new Set([".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"]);
 

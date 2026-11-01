@@ -29,4 +29,4 @@ if [[ $# -lt 1 || "$1" == "-h" || "$1" == "--help" ]]; then
 fi
 
 url="$1"; shift
-summarise_with_speech "yt-summary" "$REPO_DIR/python/ai/yt-transcript" "$url" -- "$@"
+summarise_with_speech "yt-summary" "$REPO_DIR/python/ai/yt-transcript.py" "$url" -- "$@"

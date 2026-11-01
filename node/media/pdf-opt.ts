@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import fs from "node:fs";
 import path from "node:path";
-import { C, die, formatBytes, formatDuration, info, heading, prog, sizeChange, stat, success, withSpinner } from "../lib/ui.mjs";
+import { C, die, formatBytes, formatDuration, info, heading, prog, sizeChange, stat, success, withSpinner } from "../lib/ui.ts";
 
 /**
  * Compress a PDF using Ghostscript

@@ -7,7 +7,7 @@ import path from "path";
 import sharp from "sharp";
 import {
   C, die, dim, error, formatBytes, formatDuration, heading, info, prog, sizeChange, stat, success, warn, withSpinner,
-} from "../lib/ui.mjs";
+} from "../lib/ui.ts";
 
 const SUPPORTED_INPUT_FORMATS = [
   "jpg",

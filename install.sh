@@ -2,8 +2,9 @@
 #
 # install.sh — make every tool in this repo globally executable.
 #
-# Scans the language directories for executable tools (skipping lib/ and this
-# script), symlinks each into ~/.local/bin by its basename, and checks that
+# Scans <language>/<theme>/ for executable tools (skipping lib/), symlinks each
+# into ~/.local/bin under its filename minus the extension (ytdl.py -> ytdl),
+# removes links left dangling by renamed or deleted tools, and checks that
 # ~/.local/bin is on PATH.
 #
 # A tool can declare short aliases with a comment line near the top:
@@ -39,10 +40,10 @@ mkdir -p "$BIN_DIR"
 # --- language dependencies --------------------------------------------------
 # Python tools carry inline (PEP 723) deps that uv resolves on first run, so
 # only Node needs an install step. The toolchain itself comes from mise.
-if [[ -f "$REPO_DIR/node/package.json" ]]; then
+if [[ -f "$REPO_DIR/package.json" ]]; then
   if command -v mise >/dev/null 2>&1; then
-    info "Installing Node dependencies ${C_DIM}(node/node_modules)${C_RESET}"
-    (cd "$REPO_DIR/node" && mise exec node@22 -- npm install --no-audit --no-fund --silent)
+    info "Installing Node dependencies ${C_DIM}(node_modules)${C_RESET}"
+    (cd "$REPO_DIR" && mise exec node@22 -- npm install --no-audit --no-fund --silent)
     success "Node dependencies ready."
   else
     warn "mise not found — Node and Python tools need it. Install with: brew install mise"
@@ -71,11 +72,11 @@ link_one() {
   return 0
 }
 
-# Executable tools live at <language>/<theme>/<tool>. Skip anything under a
-# lib/ directory and skip files with a dot in the basename (libs keep .sh; tools
-# are extensionless commands).
+# Executable tools live at exactly <language>/<theme>/<tool>.<ext>; lib/ holds
+# shared code and is never installed.
 while IFS= read -r -d '' tool; do
   name="$(basename "$tool")"
+  name="${name%.*}"
 
   if link_one "$tool" "$name"; then ((installed++)) || true; else ((skipped++)) || true; fi
 
@@ -89,14 +90,27 @@ while IFS= read -r -d '' tool; do
     fi
   done
 done < <(
-  find "$REPO_DIR" \
-    -type d -name lib -prune -o \
-    -type f -perm -u+x ! -name '*.*' ! -name 'install.sh' -print0
+  find "$REPO_DIR" -mindepth 3 -maxdepth 3 \
+    -type f -perm -u+x \
+    ! -path '*/lib/*' ! -path '*/node_modules/*' ! -path '*/.*' -print0
 )
+
+# Remove links into this repo whose tool no longer exists (renamed/deleted).
+removed=0
+for link in "$BIN_DIR"/*; do
+  [[ -L "$link" ]] || continue
+  target="$(readlink "$link")"
+  if [[ "$target" == "$REPO_DIR"/* && ! -e "$target" ]]; then
+    rm "$link"
+    info "Removed stale link $(basename "$link") ${C_DIM}(${target#"$REPO_DIR"/} is gone)${C_RESET}" "🗑️"
+    ((removed++)) || true
+  fi
+done
 
 echo
 stat "newly linked" "$installed"
 stat "already present/skipped" "$skipped"
+[[ $removed -gt 0 ]] && stat "stale links removed" "$removed"
 
 # --- PATH check -------------------------------------------------------------
 case ":$PATH:" in
