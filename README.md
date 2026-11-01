@@ -30,22 +30,22 @@ falls back to plain bash, so no tool ever hard-fails for want of it.
 
 ## Tools
 
-| Command | Does |
-| --- | --- |
-| `gprune` | Prunes local git branches whose remote branch has been deleted |
-| `portkill` (`pk`) | Shows what is listening on your ports and kills it |
-| `ytdl` | Downloads YouTube videos at the best available resolution |
-| `yt-transcript` | Prints a YouTube video's transcript (captions, or transcribes the audio) |
-| `transcribe` | Transcribes an audio or video file to text (OpenAI) |
-| `summarise` | Summarises text from stdin or a file (Claude or OpenAI) |
-| `pdf2text` | Extracts the text of a PDF |
-| `speak` | Turns text into an mp3 with ElevenLabs |
-| `yt-summary` | `yt-transcript URL \| summarise`, in one command (`--speak` to hear it) |
-| `pdf-summary` | `pdf2text FILE \| summarise`, in one command (`--speak` to hear it) |
-| `img-opt` | Resizes and converts images (webp by default) |
-| `vid-opt` | Re-encodes video for the web (H.264/AAC, optional webm + poster) |
-| `glb-opt` | Shrinks `.glb` 3D models (simplify, quantise, meshopt, webp textures) |
-| `pdf-opt` | Compresses PDFs with Ghostscript |
+| Command           | Does                                                                     |
+| ----------------- | ------------------------------------------------------------------------ |
+| `gprune`          | Prunes local git branches whose remote branch has been deleted           |
+| `portkill` (`pk`) | Shows what is listening on your ports and kills it                       |
+| `ytdl`            | Downloads YouTube videos at the best available resolution                |
+| `yt-transcript`   | Prints a YouTube video's transcript (captions, or transcribes the audio) |
+| `transcribe`      | Transcribes an audio or video file to text (OpenAI)                      |
+| `summarise`       | Summarises text from stdin or a file (Claude or OpenAI)                  |
+| `pdf2text`        | Extracts the text of a PDF                                               |
+| `speak`           | Turns text into an mp3 with ElevenLabs                                   |
+| `yt-summary`      | `yt-transcript URL \| summarise`, in one command (`--speak` to hear it)  |
+| `pdf-summary`     | `pdf2text FILE \| summarise`, in one command (`--speak` to hear it)      |
+| `img-opt`         | Resizes and converts images (webp by default)                            |
+| `vid-opt`         | Re-encodes video for the web (H.264/AAC, optional webm + poster)         |
+| `glb-opt`         | Shrinks `.glb` 3D models (simplify, quantise, meshopt, webp textures)    |
+| `pdf-opt`         | Compresses PDFs with Ghostscript                                         |
 
 ### gprune
 
@@ -200,46 +200,61 @@ at 3000px; HEIC is decoded with macOS `sips`. `vid-opt --help` lists every optio
 
 ## Layout
 
-Grouped by language first, then by theme:
+Grouped by language first, then by theme. The command is the filename without its
+extension (`ytdl.py` → `ytdl`):
 
-```
+```text
 bash/
-  lib/
-    common.sh          # colours, emojis, spinners, prompts, output helpers
-  git/
-    gprune
-  net/
-    portkill
-  ai/
-    yt-summary  pdf-summary
+  lib/        common.sh  summary.sh
+  git/        gprune.sh
+  net/        portkill.sh
+  ai/         yt-summary.sh  pdf-summary.sh
 node/
-  package.json         # shared deps (node_modules is gitignored)
-  media/
-    img-opt  vid-opt  glb-opt  pdf-opt
+  lib/        ui.ts
+  media/      img-opt.ts  vid-opt.ts  glb-opt.ts  pdf-opt.ts
 python/
-  lib/
-    scriptlib.py       # shared console/.env/cache helpers
-  media/
-    ytdl               # deps declared inline (PEP 723)
-  ai/
-    yt-transcript  transcribe  pdf2text  summarise  speak
+  lib/        scriptlib.py  ytlib.py
+  media/      ytdl.py
+  ai/         yt-transcript.py  transcribe.py  pdf2text.py  summarise.py  speak.py
 ```
 
-A tool is an executable file with no extension — the filename is the command name.
-Shared libraries live in `lib/`, keep their extension, and are never installed.
+Shared code lives in `lib/` and is never installed. Node tools are TypeScript, which
+Node 22 runs directly with no build step. Each Python tool declares its dependencies
+inline (PEP 723), and uv installs them on first run.
+
+## Development
+
+```sh
+mise run setup      # node_modules + .venv (point your editor's Python at .venv)
+mise run check      # format check, lint and type check — everything, no changes
+mise run fix        # auto-fix, then format
+```
+
+|                 | format   | lint                               | types            |
+| --------------- | -------- | ---------------------------------- | ---------------- |
+| Python          | ruff     | ruff                               | pyright (strict) |
+| TypeScript      | Prettier | ESLint (typescript-eslint, strict) | tsc (strict)     |
+| Bash            | shfmt    | shellcheck                         | —                |
+| Markdown / JSON | Prettier | —                                  | —                |
+
+Your editor picks up the same configs. In VS Code, accept the recommended extensions
+from `.vscode/extensions.json`; formatting on save then matches `mise run check`.
 
 ## Adding a tool
 
-1. Drop the executable in the right `<language>/<theme>/` directory and `chmod +x` it.
-2. Start with `#!/usr/bin/env bash` and `set -euo pipefail`, then source
-   `bash/lib/common.sh` after resolving the script's real path (it runs via a symlink).
+1. Put the executable in `<language>/<theme>/<name>.<ext>` and `chmod +x` it.
+2. Bash: start with `#!/usr/bin/env bash` and `set -euo pipefail`, then source
+   `bash/lib/common.sh` after resolving the script's real path (it runs via a
+   symlink). Python and Node: copy the shebang and the lib import from an existing
+   tool.
 3. Want a short name? Add a comment near the top: `# aliases: pk`. The installer
    symlinks each alias at the same tool.
-4. Re-run `./install.sh`.
+4. Re-run `./install.sh`, then make `mise run check` pass.
 
 ## Requirements
 
-`bash` (3.2 is fine — macOS ships it), `mise` for the Python and Node tools, plus
+`bash` (3.2 is fine — macOS ships it), `mise` for the Python and Node tools (and the
+dev tooling), plus
 whatever a tool's own domain needs: `git` for `gprune`, `lsof` for `portkill`, `ffmpeg`
 for `ytdl` and `vid-opt`, Ghostscript for `pdf-opt`. Written and tested on macOS; the tools avoid
 anything macOS-specific but Linux is untested.

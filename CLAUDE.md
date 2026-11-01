@@ -11,47 +11,49 @@ thing well, tells the user clearly what it's doing, and is pleasant to look at.
 
 Scripts are grouped **by language first, then by functionality/theme**:
 
-```
+```text
 <language>/
   lib/                 # shared helpers for that language (not installed as commands)
   <theme>/
-    <toolname>         # one executable per tool, no file extension
+    <toolname>.<ext>   # one executable per tool; the command is the name without .<ext>
 ```
 
 Current tree:
 
-```
+```text
 bash/
   lib/
     common.sh          # colours, emojis, spinners, prompts, output helpers
     summary.sh         # source | summarise [| speak] plumbing for *-summary tools
   git/
-    gprune             # prune local branches whose remote is gone
+    gprune.sh          # prune local branches whose remote is gone
   net/
-    portkill           # inspect listening ports and kill what holds them (alias: pk)
+    portkill.sh        # inspect listening ports and kill what holds them (alias: pk)
   ai/
-    yt-summary         # yt-transcript URL | summarise [--speak]
-    pdf-summary        # pdf2text FILE | summarise [--speak]
+    yt-summary.sh      # yt-transcript URL | summarise [--speak]
+    pdf-summary.sh     # pdf2text FILE | summarise [--speak]
 node/
-  package.json         # shared deps for every node tool (node_modules is gitignored)
   lib/
-    ui.mjs             # palette, spinner, progress bar, sizes, gum confirm/choose
+    ui.ts              # palette, spinner, progress bar, sizes, gum confirm/choose
   media/
-    img-opt            # resize/convert images with sharp
-    vid-opt            # re-encode video for the web with ffmpeg
-    glb-opt            # shrink .glb 3D models with gltf-transform
-    pdf-opt            # compress PDFs with Ghostscript
+    img-opt.ts         # resize/convert images with sharp
+    vid-opt.ts         # re-encode video for the web with ffmpeg
+    glb-opt.ts         # shrink .glb 3D models with gltf-transform
+    pdf-opt.ts         # compress PDFs with Ghostscript
 python/
   lib/
     scriptlib.py       # stderr console, stdout emit, .env, cache, gum confirm/choose
+    ytlib.py           # typed boundary around pytubefix (untyped library)
   media/
-    ytdl               # download YouTube videos (merges streams with ffmpeg)
+    ytdl.py            # download YouTube videos (merges streams with ffmpeg)
   ai/
-    yt-transcript      # captions, or ytdl --audio | transcribe as a fallback
-    transcribe         # audio/video -> text (OpenAI)
-    summarise          # text -> summary (Anthropic or OpenAI, whichever key is set)
-    pdf2text           # PDF -> text (PyMuPDF), flags scanned pages
-    speak              # text -> mp3 (ElevenLabs), quota-aware, chunked + stitched
+    yt-transcript.py   # captions, or ytdl --audio | transcribe as a fallback
+    transcribe.py      # audio/video -> text (OpenAI)
+    summarise.py       # text -> summary (Anthropic or OpenAI, whichever key is set)
+    pdf2text.py        # PDF -> text (PyMuPDF), flags scanned pages
+    speak.py           # text -> mp3 (ElevenLabs), quota-aware, chunked + stitched
+package.json           # Node runtime deps + dev tooling (TypeScript, ESLint, Prettier, pyright)
+pyproject.toml         # dev-only Python env for the IDE/pyright, plus ruff + pyright config
 ```
 
 When a new language is introduced, mirror this shape (e.g. `python/lib/`,
@@ -63,11 +65,13 @@ always the top level.
 There is a single mechanism. Do not invent per-tool install steps.
 
 1. Every tool is a file with a shebang and the executable bit set (`chmod +x`).
-2. Tools have **no file extension** — the filename is the command name (`gprune`,
-   not `gprune.sh`). Shared libraries in `lib/` keep their extension and are never
-   installed.
-3. `./install.sh` scans the language directories for executable tools (skipping
-   `lib/`) and symlinks each into `~/.local/bin` by its basename.
+2. Tools keep their language's extension (`.sh`, `.py`, `.ts`) so editors, linters
+   and type checkers recognise them; the **command name is the filename without
+   the extension** (`gprune.sh` → `gprune`). Shared code lives in `lib/` and is
+   never installed.
+3. `./install.sh` finds executables at exactly `<language>/<theme>/<tool>.<ext>`
+   (skipping `lib/`), symlinks each into `~/.local/bin` under its command name,
+   and removes links left dangling by renamed or deleted tools.
 4. A tool may declare short aliases with a comment line near the top of the
    file — `# aliases: pk` — and `install.sh` symlinks each alias at the same
    tool. The tool prints `$(basename "$0")` in its help and hints, so suggested
@@ -76,8 +80,8 @@ There is a single mechanism. Do not invent per-tool install steps.
    the exact line to add to the user's shell profile if it is missing. We use
    `~/.local/bin` (not `/usr/local/bin`) so installation never needs `sudo`.
 
-To add a new tool: drop the executable in the right `<language>/<theme>/` folder,
-`chmod +x` it, and re-run `./install.sh`.
+To add a new tool: drop the executable in the right `<language>/<theme>/` folder
+with its extension, `chmod +x` it, re-run `./install.sh`, and make `mise run check` pass.
 
 ## Toolchains: mise
 
@@ -89,10 +93,14 @@ any directory:
 - **Python** — `#!/usr/bin/env -S mise exec python@3.13 uv@0.9 -- uv run --quiet --script`,
   with dependencies declared inline in a PEP 723 `# /// script` block. uv builds
   and caches the environment on first run; there is no venv or lockfile to manage.
-- **Node** — `#!/usr/bin/env -S mise exec node@22 -- node`. Dependencies live in
-  the shared `node/package.json`; `install.sh` runs `npm install` there. Node
-  resolves the symlink to the real file, so imports find `node/node_modules`.
-  Code that compares `process.argv[1]` to its own path must `realpath` both.
+- **Node** — TypeScript, run directly by Node 22's type stripping (no build step):
+  `#!/usr/bin/env -S mise exec node@22 -- node` on a `.ts` file. Only erasable
+  syntax (no enums, namespaces or parameter properties), `import type` for types,
+  and relative imports keep the `.ts` extension — `tsconfig.json` enforces all
+  three. Dependencies live in the root `package.json`; `install.sh` runs
+  `npm install`. Node resolves the symlink to the real file, so imports find
+  `node_modules`. Code that compares `process.argv[1]` to its own path must
+  `realpath` both.
 
 Python tools import `python/lib/scriptlib.py` by resolving their real path:
 `sys.path.insert(0, str(Path(os.path.realpath(__file__)).parents[1] / "lib"))`.
@@ -102,6 +110,33 @@ which scriptlib uses) in its own PEP 723 block.
 When bumping a version, change it in `mise.toml` and in the shebangs together.
 `mise run install` is an alias for `./install.sh`.
 
+## Hygiene: format, lint, types
+
+Everything is statically typed and checked; the IDE uses the same configs, so a
+clean `mise run check` means no squiggles with editor defaults.
+
+|                        | format             | lint                                           | types              |
+| ---------------------- | ------------------ | ---------------------------------------------- | ------------------ |
+| Python                 | ruff format        | ruff (incl. `ANN`: annotate everything)        | pyright **strict** |
+| TypeScript             | Prettier           | ESLint + typescript-eslint strict-type-checked | tsc strict         |
+| Bash                   | shfmt (`-i 2 -ci`) | shellcheck (`.shellcheckrc`)                   | —                  |
+| Markdown / JSON / YAML | Prettier           | —                                              | —                  |
+
+- `mise run setup` creates `node_modules` and `.venv` (the IDE's Python
+  interpreter: one env holding every tool's deps, from `pyproject.toml`).
+- `mise run check` runs everything without changing files; it must pass before
+  committing. `mise run fix` auto-fixes and formats; `format`, `lint` and
+  `typecheck` run one stage.
+- When a Python tool gains a dependency, add it both to its PEP 723 block and to
+  `[dependency-groups].dev` in `pyproject.toml`, or pyright can't see it.
+- Fix the cause rather than suppressing. When a suppression is genuinely right,
+  scope it to one line and one rule, with a reason:
+  `# pyright: ignore[rule]  # why`, `// eslint-disable-next-line rule -- why`,
+  `# shellcheck disable=SCxxxx  # why`. No file-wide disables, no bare
+  `# type: ignore` or `@ts-ignore`.
+- Untyped third-party APIs get a small typed boundary (a `Protocol`/interface
+  plus a `cast` or runtime check) so the rest of the code stays fully typed.
+
 ## Output & interaction conventions
 
 Every tool should feel like it belongs to the same family:
@@ -109,8 +144,8 @@ Every tool should feel like it belongs to the same family:
 - **Colour** — use it to structure output (headings, success, warning, error,
   dim detail). Bash tools source `bash/lib/common.sh` for the palette; Python
   uses `python/lib/scriptlib.py` (rich) and Node `node/lib/ui.mjs`.
-- **Emojis** — express *activity* (🔍 scanning, ⏳ waiting, 🌿 branches), *outcome*
-  (✅ success, ⚠️ warning, ❌ error, 🗑️ deleted), and *stats* (📊 counts). Keep them
+- **Emojis** — express _activity_ (🔍 scanning, ⏳ waiting, 🌿 branches), _outcome_
+  (✅ success, ⚠️ warning, ❌ error, 🗑️ deleted), and _stats_ (📊 counts). Keep them
   meaningful, not decorative noise.
 - **Detailed information** — always say what's about to happen, what happened, and
   show relevant stats (counts, timings, before/after). Never leave the user guessing.
@@ -153,16 +188,16 @@ shell take priority. Never print a key, and check `git status` before committing
 optional** enhancement. When it's installed, the shared bash helpers use it for
 interactive dropdowns (`menu`), confirmations (`confirm`), and spinners
 (`run_with_spinner`). When it's absent, every helper falls back to a pure-bash
-implementation, so tools must never *require* it. `install.sh` detects it and
+implementation, so tools must never _require_ it. `install.sh` detects it and
 prints the `brew install gum` hint if missing.
 
 Every language has the same gum-backed prompt helpers, each with a fallback:
 
-| | single choice | multi choice | yes/no | spinner |
-| --- | --- | --- | --- | --- |
-| bash (`common.sh`) | `menu` | `multi_select` | `confirm` | `run_with_spinner` |
-| python (`scriptlib`) | `choose` | — | `confirm` | `console.status` (rich) |
-| node (`ui.mjs`) | `choose` | — | `confirm` | `withSpinner`, `progressBar` |
+|                      | single choice | multi choice   | yes/no    | spinner                      |
+| -------------------- | ------------- | -------------- | --------- | ---------------------------- |
+| bash (`common.sh`)   | `menu`        | `multi_select` | `confirm` | `run_with_spinner`           |
+| python (`scriptlib`) | `choose`      | —              | `confirm` | `console.status` (rich)      |
+| node (`ui.mjs`)      | `choose`      | —              | `confirm` | `withSpinner`, `progressBar` |
 
 Prompts talk to `/dev/tty`, so they work mid-pipeline; with no terminal they
 return the default (or cancel) instead of blocking. Use a prompt where it saves
@@ -176,7 +211,7 @@ hard-fail because a nicety isn't installed.
 ## Bash specifics
 
 - Start with `#!/usr/bin/env bash` and `set -euo pipefail`.
-- Source shared helpers by resolving the script's *real* path first (it will be run
+- Source shared helpers by resolving the script's _real_ path first (it will be run
   via a symlink), then sourcing `../lib/common.sh` relative to the real location.
 - Keep tools dependency-light: assume a POSIX environment plus the tool's own domain
   binary (e.g. `git` for git tools). Check for required binaries up front.
