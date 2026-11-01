@@ -1,0 +1,5 @@
+{
+  // Prettier owns wrapping and layout; markdownlint checks the rest.
+  "default": true,
+  "MD013": false,
+}

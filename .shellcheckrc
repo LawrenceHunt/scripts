@@ -1,0 +1,8 @@
+# Follow sourced libs relative to each script, wherever shellcheck runs from.
+source-path=SCRIPTDIR
+external-sources=true
+
+# Optional checks adopted on top of the defaults.
+enable=check-unassigned-uppercase
+enable=quote-safe-variables
+enable=require-double-brackets

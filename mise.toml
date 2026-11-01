@@ -1,5 +1,5 @@
-# Toolchain for the scripts in this repo. Tools also pin these in their shebang
-# so they work from any directory once symlinked into ~/.local/bin:
+# Toolchain for the scripts in this repo. Tools also pin their runtime in the
+# shebang so they work from any directory once symlinked into ~/.local/bin:
 #   python: #!/usr/bin/env -S mise exec python@3.13 uv@0.9 -- uv run --quiet --script
 #   node:   #!/usr/bin/env -S mise exec node@22 -- node
 # Keep the two in step when bumping a version.
@@ -7,7 +7,52 @@
 node = "22"
 python = "3.13"
 uv = "0.9"
+# hygiene
+ruff = "0.17"
+shellcheck = "0.11"
+shfmt = "3.14"
 
 [tasks.install]
 description = "Install Node deps and symlink every tool into ~/.local/bin"
 run = "./install.sh"
+
+[tasks.setup]
+description = "Create the dev environments the IDE and checks use (node_modules, .venv)"
+run = ["npm install --no-audit --no-fund", "uv sync --quiet"]
+
+[tasks.format]
+description = "Format everything in place"
+run = [
+  "ruff format",
+  "ruff check --select I --fix --quiet",
+  "npx prettier --write --log-level warn .",
+  "shfmt --write --indent 2 --case-indent install.sh bash",
+]
+
+[tasks.lint]
+description = "Lint (no changes)"
+run = [
+  "ruff check",
+  "npx eslint .",
+  "shellcheck -x install.sh bash/*/*.sh",
+  "npx markdownlint-cli2 '**/*.md' '#node_modules' '#.venv'",
+]
+
+[tasks.typecheck]
+description = "Static type checks"
+run = ["npx tsc --noEmit", "npx pyright"]
+
+[tasks.check]
+description = "Everything CI would run: formatting, lint and types, without changing files"
+depends = ["setup"]
+run = [
+  "ruff format --check",
+  "npx prettier --check --log-level warn .",
+  "shfmt --diff --indent 2 --case-indent install.sh bash",
+  "mise run lint",
+  "mise run typecheck",
+]
+
+[tasks.fix]
+description = "Auto-fix what can be fixed, then format"
+run = ["ruff check --fix --quiet", "npx eslint --fix .", "mise run format"]

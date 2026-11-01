@@ -1,0 +1,13 @@
+{
+  "recommendations": [
+    "charliermarsh.ruff",
+    "ms-python.python",
+    "ms-python.vscode-pylance",
+    "dbaeumer.vscode-eslint",
+    "esbenp.prettier-vscode",
+    "timonwong.shellcheck",
+    "mkhl.shfmt",
+    "editorconfig.editorconfig",
+    "tamasfe.even-better-toml"
+  ]
+}

@@ -1,0 +1,54 @@
+# Dev-only project: gives the IDE and type checker one environment containing
+# every Python tool's dependencies. The tools themselves don't use it — each
+# declares its own deps inline (PEP 723) and runs via `uv run --script`.
+# Keep [dependency-groups].dev in step with those inline blocks.
+[project]
+name = "scripts"
+version = "0"
+requires-python = ">=3.13"
+dependencies = []
+
+[dependency-groups]
+dev = [
+  "anthropic>=0.70",
+  "elevenlabs>=2.20",
+  "openai>=2.8",
+  "pymupdf>=1.24",
+  "pytubefix>=8.12",
+  "rich>=13",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+include = ["python/**/*.py", "*.py"]
+
+[tool.ruff.lint]
+select = [
+  "E", "W", "F",   # pycodestyle, pyflakes
+  "I",             # import sorting
+  "UP",            # pyupgrade
+  "B",             # bugbear
+  "SIM",           # simplify
+  "RUF",           # ruff-specific
+  "C4",            # comprehensions
+  "PIE",
+  "PL",            # pylint subset
+  "ANN",           # annotations everywhere (static typing)
+]
+ignore = [
+  "PLR0911", "PLR0912", "PLR0913", "PLR0915",  # complexity counts: CLI mains are long by nature
+  "PLR2004",                                   # magic values in comparisons
+  "E402",                                      # tools import after sys.path setup for scriptlib
+]
+
+[tool.pyright]
+include = ["python"]
+extraPaths = ["python/lib"]
+venvPath = "."
+venv = ".venv"
+pythonVersion = "3.13"
+typeCheckingMode = "strict"

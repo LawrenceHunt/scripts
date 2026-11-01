@@ -1,13 +1,34 @@
 {
-  "name": "scripts-node",
+  "name": "scripts",
   "private": true,
   "type": "module",
-  "description": "Dependencies for the Node tools in this directory. Installed by ../install.sh.",
+  "description": "Dependencies and dev tooling for the Node tools in node/. Installed by install.sh.",
   "dependencies": {
     "@gltf-transform/core": "^3.9.0",
     "@gltf-transform/extensions": "^3.10.1",
     "@gltf-transform/functions": "^3.9.0",
     "meshoptimizer": "^1.0.1",
     "sharp": "^0.34.5"
+  },
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^22.20.5",
+    "eslint": "^10.14.0",
+    "globals": "^17.13.0",
+    "jiti": "^2.7.0",
+    "markdownlint-cli2": "^0.24.0",
+    "prettier": "^3.9.10",
+    "pyright": "^1.1.414",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.72.1"
   }
 }
