@@ -1,7 +1,7 @@
 #!/usr/bin/env -S mise exec node@22 -- node
 
-import fs from "fs";
-import path from "path";
+import fs from "node:fs";
+import path from "node:path";
 import { Logger, NodeIO } from "@gltf-transform/core";
 import { ALL_EXTENSIONS } from "@gltf-transform/extensions";
 import {
@@ -16,7 +16,19 @@ import {
 } from "@gltf-transform/functions";
 import { MeshoptDecoder, MeshoptEncoder, MeshoptSimplifier } from "meshoptimizer";
 import {
-  C, die, formatBytes, formatDuration, heading, info, prog, sizeChange, stat, success, warn, withSpinner,
+  C,
+  die,
+  errorMessage,
+  formatBytes,
+  formatDuration,
+  heading,
+  info,
+  prog,
+  sizeChange,
+  stat,
+  success,
+  warn,
+  withSpinner,
 } from "../lib/ui.ts";
 
 const USAGE = `Usage:
@@ -53,9 +65,14 @@ const io = new NodeIO().registerExtensions(ALL_EXTENSIONS).registerDependencies(
   "meshopt.encoder": MeshoptEncoder,
 });
 
-async function optimizeGLB(inputFile, outputFile) {
+interface Result {
+  inputSize: number;
+  outputSize: number;
+}
+
+async function optimizeGLB(inputFile: string, outputFile: string): Promise<Result> {
   const name = path.basename(inputFile);
-  let result;
+  const result: Result = { inputSize: 0, outputSize: 0 };
   await withSpinner(name, async () => {
     // Read the GLB file
     const document = await io.read(inputFile);
@@ -97,32 +114,33 @@ async function optimizeGLB(inputFile, outputFile) {
         targetFormat: "webp",
         quality: 0.4, // Extremely aggressive compression for maximum size reduction
         resize: [1024, 1024], // Even smaller textures: 1024x1024 instead of 2048x2048
-      })
+      }),
     );
 
     // Write the optimized GLB
     await io.write(outputFile, document);
 
-    const inputSize = fs.statSync(inputFile).size;
-    const outputSize = fs.statSync(outputFile).size;
-    result = { inputSize, outputSize };
-    return { label: `${name} → ${path.basename(outputFile)}  ${sizeChange(inputSize, outputSize)}` };
+    result.inputSize = fs.statSync(inputFile).size;
+    result.outputSize = fs.statSync(outputFile).size;
+    return {
+      label: `${name} → ${path.basename(outputFile)}  ${sizeChange(result.inputSize, result.outputSize)}`,
+    };
   });
   return result;
 }
 
-function printHeader(input, output, count) {
+function printHeader(input: string, output: string, count: number): void {
   heading(`${prog()} · optimising 3D models`, "🧊");
   info(`Input:    ${C.bold}${input}${C.reset}`);
   info(`Output:   ${C.bold}${output}${C.reset}`);
   info("Settings: simplify 20% · quantize · meshopt high · webp textures ≤1024px");
-  info(`Found ${count} model(s)`, "🔍");
+  info(`Found ${String(count)} model(s)`, "🔍");
   console.log();
 }
 
 const started = Date.now();
 
-async function processPath(inputPath, outputPath) {
+async function processPath(inputPath: string, outputPath: string | undefined): Promise<Result[]> {
   const stats = fs.statSync(inputPath);
 
   if (stats.isFile()) {
@@ -131,7 +149,7 @@ async function processPath(inputPath, outputPath) {
       die("Input file must be a .glb file");
     }
 
-    const output = outputPath || inputPath.replace(/\.glb$/i, ".optimized.glb");
+    const output = outputPath ?? inputPath.replace(/\.glb$/i, ".optimized.glb");
     printHeader(inputPath, output, 1);
     const result = await optimizeGLB(inputPath, output);
     return [result];
@@ -147,11 +165,11 @@ async function processPath(inputPath, outputPath) {
       process.exit(0);
     }
 
-    const outputDir = outputPath || path.join(inputPath, "optimized");
+    const outputDir = outputPath ?? path.join(inputPath, "optimized");
     fs.mkdirSync(outputDir, { recursive: true });
     printHeader(inputPath, outputDir, files.length);
 
-    const results = [];
+    const results: Result[] = [];
     for (const file of files) {
       const outputFile = path.join(outputDir, path.basename(file));
       results.push(await optimizeGLB(file, outputFile));
@@ -169,9 +187,10 @@ processPath(inputPath, outputPath)
     console.log();
     stat("optimised", results.length);
     info(`Total: ${sizeChange(totalIn, totalOut)}`, "📦");
-    if (totalIn > totalOut) info(`Saved ${C.bold}${formatBytes(totalIn - totalOut)}${C.reset}`, "💾");
+    if (totalIn > totalOut)
+      info(`Saved ${C.bold}${formatBytes(totalIn - totalOut)}${C.reset}`, "💾");
     success(`Done in ${formatDuration(Date.now() - started)}. 🎉`);
   })
-  .catch((err) => {
-    die(err.message);
+  .catch((err: unknown) => {
+    die(errorMessage(err));
   });

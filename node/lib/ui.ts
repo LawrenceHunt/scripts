@@ -1,8 +1,8 @@
-// ui.mjs — shared styling, output and prompt helpers for node tools.
+// ui.ts — shared styling, output and prompt helpers for node tools.
 //
 // Mirrors bash/lib/common.sh so every tool feels like the same family:
 //
-//   import { heading, info, success, withSpinner } from "../lib/ui.mjs";
+//   import { heading, info, success, withSpinner } from "../lib/ui.ts";
 //
 // Informational output goes to stdout; warnings, errors, spinners and progress
 // bars go to stderr. Colours are dropped when a stream isn't a TTY or NO_COLOR
@@ -17,14 +17,33 @@ import readline from "node:readline";
 
 // ----- Colour palette ------------------------------------------------------
 
+export interface Palette {
+  reset: string;
+  bold: string;
+  dim: string;
+  red: string;
+  green: string;
+  yellow: string;
+  blue: string;
+  magenta: string;
+  cyan: string;
+}
+
 const NO_COLOR = Boolean(process.env.NO_COLOR);
 
-function palette(stream) {
+function palette(stream: NodeJS.WriteStream): Palette {
   const on = stream.isTTY && !NO_COLOR;
-  const c = (code) => (on ? `\x1b[${code}m` : "");
+  const c = (code: number): string => (on ? `\x1b[${String(code)}m` : "");
   return {
-    reset: c(0), bold: c(1), dim: c(2), red: c(31), green: c(32),
-    yellow: c(33), blue: c(34), magenta: c(35), cyan: c(36),
+    reset: c(0),
+    bold: c(1),
+    dim: c(2),
+    red: c(31),
+    green: c(32),
+    yellow: c(33),
+    blue: c(34),
+    magenta: c(35),
+    cyan: c(36),
   };
 }
 
@@ -33,47 +52,66 @@ const E = palette(process.stderr);
 
 // ----- Output helpers ------------------------------------------------------
 
-export const heading = (text, emoji = "›") =>
+export function heading(text: string, emoji = "›"): void {
   console.log(`\n${C.bold}${C.cyan}${emoji} ${text}${C.reset}`);
-export const info = (text, emoji = "•") => console.log(`${C.blue}${emoji}${C.reset} ${text}`);
-export const success = (text, emoji = "✅") => console.log(`${C.green}${emoji}${C.reset} ${text}`);
-export const warn = (text, emoji = "⚠️ ") => console.error(`${E.yellow}${emoji}${E.reset} ${text}`);
-export const error = (text, emoji = "❌") => console.error(`${E.red}${emoji}${E.reset} ${text}`);
-export const dim = (text) => console.log(`${C.dim}${text}${C.reset}`);
-export const stat = (label, value) =>
-  console.log(`${C.magenta}📊 ${C.bold}${value}${C.reset}${C.magenta} ${label}${C.reset}`);
+}
+export function info(text: string, emoji = "•"): void {
+  console.log(`${C.blue}${emoji}${C.reset} ${text}`);
+}
+export function success(text: string, emoji = "✅"): void {
+  console.log(`${C.green}${emoji}${C.reset} ${text}`);
+}
+export function warn(text: string, emoji = "⚠️ "): void {
+  console.error(`${E.yellow}${emoji}${E.reset} ${text}`);
+}
+export function error(text: string, emoji = "❌"): void {
+  console.error(`${E.red}${emoji}${E.reset} ${text}`);
+}
+export function dim(text: string): void {
+  console.log(`${C.dim}${text}${C.reset}`);
+}
+export function stat(label: string, value: number | string): void {
+  console.log(`${C.magenta}📊 ${C.bold}${String(value)}${C.reset}${C.magenta} ${label}${C.reset}`);
+}
 
 // die(message, code) — print an error and exit.
-export function die(message, code = 1) {
+export function die(message: string, code = 1): never {
   error(message);
   process.exit(code);
 }
 
+// errorMessage(err) — the message of anything thrown.
+export function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 // prog() — the command name as typed (tools run via symlinks/aliases).
-export const prog = () => path.basename(process.argv[1] || "tool");
+export function prog(): string {
+  return path.basename(process.argv[1] ?? "tool");
+}
 
 // ----- Formatting ----------------------------------------------------------
 
-export function formatBytes(bytes) {
+export function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
-  const units = ["B", "KB", "MB", "GB", "TB"];
+  const units = ["B", "KB", "MB", "GB", "TB"] as const;
   const i = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
-  return `${Math.round((bytes / 1024 ** i) * 100) / 100} ${units[i]}`;
+  return `${String(Math.round((bytes / 1024 ** i) * 100) / 100)} ${units[i] ?? "B"}`;
 }
 
-export function formatDuration(ms) {
+export function formatDuration(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return "?";
-  if (ms < 1000) return `${Math.round(ms)}ms`;
+  if (ms < 1000) return `${String(Math.round(ms))}ms`;
   const s = ms / 1000;
   if (s < 60) return `${s.toFixed(1)}s`;
   const m = Math.floor(s / 60);
   const rest = Math.round(s % 60);
-  if (m < 60) return `${m}m ${String(rest).padStart(2, "0")}s`;
-  return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}m`;
+  if (m < 60) return `${String(m)}m ${String(rest).padStart(2, "0")}s`;
+  return `${String(Math.floor(m / 60))}h ${String(m % 60).padStart(2, "0")}m`;
 }
 
 // sizeChange(before, after) — "1.2 MB → 300 KB (−75.0%)", coloured.
-export function sizeChange(before, after) {
+export function sizeChange(before: number, after: number): string {
   const pct = before > 0 ? (1 - after / before) * 100 : 0;
   const colour = pct >= 0 ? C.green : C.yellow;
   const sign = pct >= 0 ? "−" : "+";
@@ -84,23 +122,32 @@ export function sizeChange(before, after) {
 
 const FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
 
+// What a withSpinner callback may return: `label` replaces the completion text.
+export interface SpinnerResult {
+  label?: string;
+}
+
 // withSpinner(label, fn) — run an async fn with a spinner on stderr.
 // fn may return { label } to replace the completion line's text.
 // On success prints "✅ label (elapsed)"; on failure "❌ label" and rethrows.
-export async function withSpinner(label, fn) {
+export async function withSpinner<T extends SpinnerResult | undefined>(
+  label: string,
+  fn: () => Promise<T>,
+): Promise<T> {
   const started = Date.now();
   const tty = process.stderr.isTTY;
-  let timer;
+  let timer: NodeJS.Timeout | undefined;
   if (tty) {
     let i = 0;
     process.stderr.write("\x1b[?25l");
     timer = setInterval(() => {
-      process.stderr.write(`\r\x1b[2K${E.cyan}${FRAMES[i++ % FRAMES.length]}${E.reset} ${label}`);
+      const frame = FRAMES[i++ % FRAMES.length] ?? "";
+      process.stderr.write(`\r\x1b[2K${E.cyan}${frame}${E.reset} ${label}`);
     }, 80);
   } else {
     console.error(`⏳ ${label}`);
   }
-  const clear = () => {
+  const clear = (): void => {
     if (!tty) return;
     clearInterval(timer);
     process.stderr.write("\r\x1b[2K\x1b[?25h");
@@ -118,21 +165,27 @@ export async function withSpinner(label, fn) {
   }
 }
 
+export interface ProgressBar {
+  update(fraction: number, extra?: string): void;
+  done(): void;
+}
+
 // progressBar(label) — returns { update(fraction, extra), done() } that draws
 // "label ━━━━━━──── 42% extra" on stderr (TTY only; otherwise silent).
-export function progressBar(label, width = 28) {
+export function progressBar(label: string, width = 28): ProgressBar {
   const tty = process.stderr.isTTY;
   if (tty) process.stderr.write("\x1b[?25l");
   return {
-    update(fraction, extra = "") {
+    update(fraction: number, extra = ""): void {
       if (!tty) return;
-      const f = Math.max(0, Math.min(1, fraction || 0));
+      const f = Math.max(0, Math.min(1, Number.isFinite(fraction) ? fraction : 0));
       const filled = Math.round(f * width);
       const bar = `${E.magenta}${"━".repeat(filled)}${E.reset}${E.dim}${"━".repeat(width - filled)}${E.reset}`;
       const pct = `${(f * 100).toFixed(0).padStart(3)}%`;
-      process.stderr.write(`\r\x1b[2K   ${label} ${bar} ${pct}${extra ? ` ${E.dim}${extra}${E.reset}` : ""}`);
+      const tail = extra ? ` ${E.dim}${extra}${E.reset}` : "";
+      process.stderr.write(`\r\x1b[2K   ${label} ${bar} ${pct}${tail}`);
     },
-    done() {
+    done(): void {
       if (tty) process.stderr.write("\r\x1b[2K\x1b[?25h");
     },
   };
@@ -142,7 +195,7 @@ export function progressBar(label, width = 28) {
 
 const HAVE_GUM = spawnSync("gum", ["--version"], { stdio: "ignore" }).status === 0;
 
-function ttyOk() {
+function ttyOk(): boolean {
   try {
     fs.closeSync(fs.openSync("/dev/tty", "r"));
     return true;
@@ -151,7 +204,7 @@ function ttyOk() {
   }
 }
 
-function askLine(question) {
+function askLine(question: string): Promise<string> {
   return new Promise((resolve) => {
     const input = fs.createReadStream("/dev/tty");
     const rl = readline.createInterface({ input, output: process.stderr });
@@ -164,15 +217,19 @@ function askLine(question) {
 }
 
 // confirm(question, defaultYes) — yes/no. Returns the default with no terminal.
-export async function confirm(question, defaultYes = false) {
+export async function confirm(question: string, defaultYes = false): Promise<boolean> {
   if (!ttyOk()) return defaultYes;
   if (HAVE_GUM) {
-    const r = spawnSync("gum", ["confirm", question, `--default=${defaultYes}`], { stdio: "inherit" });
+    const r = spawnSync("gum", ["confirm", question, `--default=${String(defaultYes)}`], {
+      stdio: "inherit",
+    });
     return r.status === 0;
   }
   const hint = defaultYes ? "[Y/n]" : "[y/N]";
   for (;;) {
-    const reply = (await askLine(`${E.yellow}❓${E.reset} ${question} ${hint} `)).trim().toLowerCase();
+    const reply = (await askLine(`${E.yellow}❓${E.reset} ${question} ${hint} `))
+      .trim()
+      .toLowerCase();
     if (!reply) return defaultYes;
     if (["y", "yes"].includes(reply)) return true;
     if (["n", "no"].includes(reply)) return false;
@@ -182,7 +239,7 @@ export async function confirm(question, defaultYes = false) {
 
 // choose(header, options) — single select. Returns the index, or -1 if
 // cancelled or there is no terminal.
-export async function choose(header, options) {
+export async function choose(header: string, options: readonly string[]): Promise<number> {
   if (!ttyOk() || options.length === 0) return -1;
   if (HAVE_GUM) {
     const r = spawnSync("gum", ["choose", "--header", header, "--cursor", "❯ "], {
@@ -194,8 +251,10 @@ export async function choose(header, options) {
     return options.indexOf(r.stdout.trim());
   }
   console.error(`${E.yellow}❓${E.reset} ${header}`);
-  options.forEach((o, i) => console.error(`   ${E.cyan}${i + 1}${E.reset}) ${o}`));
-  const reply = (await askLine(`   Choose 1-${options.length} (blank to cancel): `)).trim();
+  options.forEach((o, i) => {
+    console.error(`   ${E.cyan}${String(i + 1)}${E.reset}) ${o}`);
+  });
+  const reply = (await askLine(`   Choose 1-${String(options.length)} (blank to cancel): `)).trim();
   const n = Number.parseInt(reply, 10);
   return n >= 1 && n <= options.length ? n - 1 : -1;
 }
