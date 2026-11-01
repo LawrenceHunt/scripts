@@ -19,17 +19,34 @@ import os
 import sys
 import time
 from pathlib import Path
+from typing import Protocol, cast
 
 sys.path.insert(0, str(Path(os.path.realpath(__file__)).parents[1] / "lib"))
-from scriptlib import console, emit, fail  # noqa: E402
+import pymupdf
+from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn
+from scriptlib import console, emit, fail, prog_name
 
-import pymupdf  # noqa: E402
-from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn  # noqa: E402
+
+class PdfPage(Protocol):
+    def get_text(self) -> str: ...  # default "text" mode always returns str
+
+
+class PdfDocument(Protocol):
+    """The parts of pymupdf.Document used here (its own annotations are loose)."""
+
+    @property
+    def needs_pass(self) -> bool: ...
+    @property
+    def page_count(self) -> int: ...
+    @property
+    def metadata(self) -> dict[str, str] | None: ...
+
+    def __getitem__(self, index: int) -> PdfPage: ...
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        prog=os.path.basename(sys.argv[0]),
+        prog=prog_name(),
         description="Extract text from PDFs (stdout).",
     )
     parser.add_argument("files", nargs="+", metavar="FILE", help="PDF files")
@@ -42,8 +59,8 @@ def page_numbers(spec: str | None, count: int) -> list[int]:
     if not spec:
         return list(range(count))
     pages: list[int] = []
-    for part in spec.split(","):
-        part = part.strip()
+    for raw in spec.split(","):
+        part = raw.strip()
         try:
             if "-" in part:
                 start, end = (int(x) for x in part.split("-", 1))
@@ -57,7 +74,7 @@ def page_numbers(spec: str | None, count: int) -> list[int]:
 
 def extract(path: Path, spec: str | None) -> str:
     try:
-        doc = pymupdf.open(path)
+        doc = cast(PdfDocument, pymupdf.open(path))
     except Exception as e:  # pymupdf raises its own varied error types
         fail(f"Could not open {path.name}: {e}")
     if doc.needs_pass:
@@ -65,11 +82,21 @@ def extract(path: Path, spec: str | None) -> str:
 
     pages = page_numbers(spec, doc.page_count)
     title = (doc.metadata or {}).get("title") or path.stem
-    console.print(f"[bold cyan]📄 Reading[/] {path.name} [dim]({len(pages)} of {doc.page_count} pages · {title})[/]")
+    console.print(
+        f"[bold cyan]📄 Reading[/] {path.name} "
+        f"[dim]({len(pages)} of {doc.page_count} pages · {title})[/]"
+    )
 
     started = time.monotonic()
-    texts, empty = [], 0
-    with Progress(TextColumn("   📖"), BarColumn(), MofNCompleteColumn(), console=console, transient=True) as progress:
+    texts: list[str] = []
+    empty = 0
+    with Progress(
+        TextColumn("   📖"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        console=console,
+        transient=True,
+    ) as progress:
         task = progress.add_task("pages", total=len(pages))
         for index in pages:
             text = doc[index].get_text().strip()
@@ -79,13 +106,17 @@ def extract(path: Path, spec: str | None) -> str:
             progress.advance(task)
 
     if pages and empty == len(pages):
-        fail(f"No text found in {path.name}.", "It looks scanned (images only); it needs OCR first.")
+        fail(
+            f"No text found in {path.name}.",
+            "It looks scanned (images only); it needs OCR first.",
+        )
     if empty:
         console.print(f"   [yellow]⚠️  {empty} page(s) had no text (scanned images?)[/]")
 
     text = "\n\n".join(t for t in texts if t)
+    elapsed = time.monotonic() - started
     console.print(
-        f"[bold green]✅ Extracted[/] {len(text.split()):,} words [dim]({time.monotonic() - started:.1f}s)[/]"
+        f"[bold green]✅ Extracted[/] {len(text.split()):,} words [dim]({elapsed:.1f}s)[/]"
     )
     return text
 

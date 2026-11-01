@@ -28,34 +28,41 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(os.path.realpath(__file__)).parents[1] / "lib"))
-from scriptlib import cache_path, choose, console, emit, fail, interactive, tool  # noqa: E402
-
-from pytubefix import YouTube, exceptions  # noqa: E402
+from scriptlib import cache_path, choose, console, emit, fail, interactive, prog_name, tool
+from ytlib import Caption, PytubeFixError, Video, open_video
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        prog=os.path.basename(sys.argv[0]),
+        prog=prog_name(),
         description="Print a YouTube video's transcript (captions, or Whisper as a fallback).",
     )
     parser.add_argument("url", metavar="URL")
     parser.add_argument("--lang", default="en", help="caption language code (default: %(default)s)")
-    parser.add_argument("--no-captions", action="store_true", help="skip captions; always transcribe the audio")
-    parser.add_argument("--no-title", action="store_true", help="don't prefix the transcript with the title")
-    parser.add_argument("--no-cache", action="store_true", help="ignore and overwrite any cached transcript")
+    parser.add_argument(
+        "--no-captions", action="store_true", help="skip captions; always transcribe the audio"
+    )
+    parser.add_argument(
+        "--no-title", action="store_true", help="don't prefix the transcript with the title"
+    )
+    parser.add_argument(
+        "--no-cache", action="store_true", help="ignore and overwrite any cached transcript"
+    )
     return parser.parse_args()
 
 
-def caption_label(caption) -> str:
+def caption_label(caption: Caption) -> str:
     kind = "auto-generated" if caption.code.startswith("a.") else "manual"
     return f"{caption.name} · {kind} ({caption.code})"
 
 
-def from_captions(yt: YouTube, lang: str) -> str | None:
+def from_captions(yt: Video, lang: str) -> str | None:
     with console.status("⏳ Checking captions…"):
         captions = list(yt.captions)
     for wanted in (lang, f"a.{lang}"):
-        caption = next((c for c in captions if c.code == wanted or c.code.startswith(f"{wanted}-")), None)
+        caption = next(
+            (c for c in captions if c.code == wanted or c.code.startswith(f"{wanted}-")), None
+        )
         if caption:
             console.print(f"   💬 Using {caption_label(caption)}")
             return caption.generate_txt_captions()
@@ -63,10 +70,14 @@ def from_captions(yt: YouTube, lang: str) -> str | None:
         console.print("   [dim]No captions on this video.[/]")
         return None
 
-    console.print(f"   [yellow]⚠️  No '{lang}' captions.[/] [dim]Available: {', '.join(c.code for c in captions)}[/]")
+    available = ", ".join(c.code for c in captions)
+    console.print(f"   [yellow]⚠️  No '{lang}' captions.[/] [dim]Available: {available}[/]")
     if not interactive():
         return None
-    options = [caption_label(c) for c in captions] + ["🎧 Transcribe the audio instead (OpenAI, billed)", "Cancel"]
+    options = [caption_label(c) for c in captions] + [
+        "🎧 Transcribe the audio instead (OpenAI, billed)",
+        "Cancel",
+    ]
     picked = choose("Which transcript should I use?", options)
     if picked is None or picked == len(options) - 1:
         fail("Cancelled.", code=130)
@@ -79,11 +90,18 @@ def from_captions(yt: YouTube, lang: str) -> str | None:
 def from_audio(url: str) -> str:
     console.print("   🎧 Falling back to audio transcription [dim](OpenAI, billed)[/]")
     with tempfile.TemporaryDirectory(prefix="yt-transcript-") as tmp:
-        dl = subprocess.run([tool("ytdl"), "--audio", "-o", tmp, url], stdout=subprocess.PIPE, text=True)
+        dl = subprocess.run(
+            [tool("ytdl"), "--audio", "-o", tmp, url],
+            stdout=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
         audio = dl.stdout.strip().splitlines()
         if dl.returncode != 0 or not audio:
             fail("Audio download failed.")
-        tr = subprocess.run([tool("transcribe"), audio[0]], stdout=subprocess.PIPE, text=True)
+        tr = subprocess.run(
+            [tool("transcribe"), audio[0]], stdout=subprocess.PIPE, text=True, check=False
+        )
         if tr.returncode != 0:
             fail("Transcription failed.")
         return tr.stdout.strip()
@@ -94,7 +112,7 @@ def main() -> int:
     console.print(f"[bold cyan]🔍 Looking up[/] [dim]{args.url}[/]")
     try:
         with console.status("⏳ Fetching video info…"):
-            yt = YouTube(args.url)
+            yt = open_video(args.url)
             title = yt.title
         console.print(f"   🎬 [bold]{title}[/]")
 
@@ -108,7 +126,7 @@ def main() -> int:
             if not text:
                 text = from_audio(args.url)
             cached.write_text(text)
-    except exceptions.PytubeFixError as e:
+    except PytubeFixError as e:
         fail(f"{type(e).__name__}: {e}")
 
     console.print(f"[bold green]✅ Transcript ready[/] [dim]({len(text.split()):,} words)[/]")

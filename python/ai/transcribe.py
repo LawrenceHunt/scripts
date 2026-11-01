@@ -29,10 +29,9 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 sys.path.insert(0, str(Path(os.path.realpath(__file__)).parents[1] / "lib"))
-from scriptlib import cache_path, console, emit, fail, load_env, require_env  # noqa: E402
-
-from openai import OpenAI  # noqa: E402
-from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, TimeElapsedColumn  # noqa: E402
+from openai import OpenAI
+from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, TimeElapsedColumn
+from scriptlib import cache_path, console, emit, fail, load_env, prog_name, require_env
 
 CHUNK_SECONDS = 600
 WORKERS = 4
@@ -40,12 +39,20 @@ WORKERS = 4
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        prog=os.path.basename(sys.argv[0]),
-        description="Transcribe audio/video files to text (stdout). Reads paths from stdin if none given.",
+        prog=prog_name(),
+        description=(
+            "Transcribe audio/video files to text (stdout). Reads paths from stdin if none given."
+        ),
     )
     parser.add_argument("files", nargs="*", metavar="FILE", help="audio or video files")
-    parser.add_argument("--model", default="gpt-4o-transcribe", help="OpenAI transcription model (default: %(default)s)")
-    parser.add_argument("--no-cache", action="store_true", help="ignore and overwrite any cached transcript")
+    parser.add_argument(
+        "--model",
+        default="gpt-4o-transcribe",
+        help="OpenAI transcription model (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--no-cache", action="store_true", help="ignore and overwrite any cached transcript"
+    )
     return parser.parse_args()
 
 
@@ -61,10 +68,29 @@ def split_audio(source: Path, folder: str) -> list[Path]:
     """Re-encode to speech-quality mono mp3 chunks. Returns them in order."""
     pattern = os.path.join(folder, "chunk_%03d.mp3")
     result = subprocess.run(
-        ["ffmpeg", "-v", "error", "-y", "-i", str(source), "-vn", "-ac", "1", "-ar", "16000",
-         "-b:a", "32k", "-f", "segment", "-segment_time", str(CHUNK_SECONDS), pattern],
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-y",
+            "-i",
+            str(source),
+            "-vn",
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-b:a",
+            "32k",
+            "-f",
+            "segment",
+            "-segment_time",
+            str(CHUNK_SECONDS),
+            pattern,
+        ],
         capture_output=True,
         text=True,
+        check=False,
     )
     if result.returncode != 0:
         fail("ffmpeg could not read the file.", result.stderr.strip())
@@ -83,14 +109,20 @@ def transcribe_file(client: OpenAI, path: Path, model: str, use_cache: bool) -> 
     with tempfile.TemporaryDirectory(prefix="transcribe-") as tmp:
         with console.status("⏳ Preparing audio with ffmpeg…"):
             chunks = split_audio(path, tmp)
-        console.print(f"   [dim]{len(chunks)} chunk(s) of up to {CHUNK_SECONDS // 60} min · model {model}[/]")
+        console.print(
+            f"   [dim]{len(chunks)} chunk(s) of up to {CHUNK_SECONDS // 60} min · model {model}[/]"
+        )
 
         def run(chunk: Path) -> str:
             with chunk.open("rb") as fh:
                 return client.audio.transcriptions.create(model=model, file=fh).text
 
         with Progress(
-            TextColumn("   📝"), BarColumn(), MofNCompleteColumn(), TimeElapsedColumn(), console=console
+            TextColumn("   📝"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TimeElapsedColumn(),
+            console=console,
         ) as progress:
             task = progress.add_task("chunks", total=len(chunks))
             with ThreadPoolExecutor(max_workers=WORKERS) as pool:
@@ -101,8 +133,9 @@ def transcribe_file(client: OpenAI, path: Path, model: str, use_cache: bool) -> 
 
     text = "\n".join(t.strip() for t in texts if t.strip())
     cached.write_text(text)
+    elapsed = time.monotonic() - started
     console.print(
-        f"[bold green]✅ Transcribed[/] {len(text.split()):,} words [dim]({time.monotonic() - started:.1f}s)[/]"
+        f"[bold green]✅ Transcribed[/] {len(text.split()):,} words [dim]({elapsed:.1f}s)[/]"
     )
     return text
 
@@ -116,7 +149,7 @@ def main() -> int:
     files = args.files
     if not files:
         if sys.stdin.isatty():
-            fail("No file given.", f"Usage: {os.path.basename(sys.argv[0])} FILE, or pipe paths in.")
+            fail("No file given.", f"Usage: {prog_name()} FILE, or pipe paths in.")
         files = [line.strip() for line in sys.stdin if line.strip()]
 
     client = OpenAI(api_key=require_env("OPENAI_API_KEY"), max_retries=3, timeout=600)

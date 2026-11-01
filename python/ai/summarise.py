@@ -19,10 +19,11 @@ import argparse
 import os
 import sys
 import time
+from collections.abc import Iterator
 from pathlib import Path
 
 sys.path.insert(0, str(Path(os.path.realpath(__file__)).parents[1] / "lib"))
-from scriptlib import console, fail, load_env, read_input  # noqa: E402
+from scriptlib import console, fail, load_env, prog_name, read_input
 
 DEFAULT_MODELS = {"anthropic": "claude-opus-5-5", "openai": "gpt-5.5"}
 
@@ -37,13 +38,17 @@ SYSTEM = (
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        prog=os.path.basename(sys.argv[0]),
+        prog=prog_name(),
         description="Summarise text from stdin or a file. The summary streams to stdout.",
     )
     parser.add_argument("file", nargs="?", help="text file (default: stdin)")
-    parser.add_argument("--words", type=int, default=500, help="target length in words (default: %(default)s)")
+    parser.add_argument(
+        "--words", type=int, default=500, help="target length in words (default: %(default)s)"
+    )
     parser.add_argument("--prompt", help="extra instructions, e.g. 'focus on the investing advice'")
-    parser.add_argument("--provider", choices=["anthropic", "openai"], help="override provider selection")
+    parser.add_argument(
+        "--provider", choices=["anthropic", "openai"], help="override provider selection"
+    )
     parser.add_argument("--model", help="override the provider's default model")
     return parser.parse_args()
 
@@ -59,8 +64,12 @@ def pick_provider(requested: str | None) -> str:
     fail("No API key found.", "Set ANTHROPIC_API_KEY or OPENAI_API_KEY in the repo's .env.")
 
 
-def stream_anthropic(model: str, prompt: str):
-    import anthropic
+# The SDK imports below are deliberately lazy: importing both costs 0.15-0.4s,
+# and only the chosen provider's is ever needed.
+
+
+def stream_anthropic(model: str, prompt: str) -> Iterator[str]:
+    import anthropic  # noqa: PLC0415 - lazy on purpose (see above)
 
     client = anthropic.Anthropic()
     try:
@@ -96,8 +105,8 @@ def stream_anthropic(model: str, prompt: str):
         console.print("[yellow]⚠️  Summary hit the token limit and may be cut off.[/]")
 
 
-def stream_openai(model: str, prompt: str):
-    import openai
+def stream_openai(model: str, prompt: str) -> Iterator[str]:
+    import openai  # noqa: PLC0415 - lazy on purpose (see above)
 
     client = openai.OpenAI(max_retries=3)
     try:
@@ -138,11 +147,13 @@ def main() -> int:
         f"[dim]({provider} · {model})[/]"
     )
     started = time.monotonic()
-    chunks = stream_anthropic(model, prompt) if provider == "anthropic" else stream_openai(model, prompt)
+    chunks: Iterator[str] = (
+        stream_anthropic(model, prompt) if provider == "anthropic" else stream_openai(model, prompt)
+    )
 
     status = console.status("⏳ Waiting for the first words…")
     status.start()
-    written = []
+    written: list[str] = []
     try:
         for piece in chunks:
             if status:
@@ -159,7 +170,9 @@ def main() -> int:
     sys.stdout.flush()
 
     words = len("".join(written).split())
-    console.print(f"[bold green]✅ Done[/] [dim]({words:,} words, {time.monotonic() - started:.1f}s)[/]")
+    console.print(
+        f"[bold green]✅ Done[/] [dim]({words:,} words, {time.monotonic() - started:.1f}s)[/]"
+    )
     return 0
 
 

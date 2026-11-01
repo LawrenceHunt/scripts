@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import NoReturn
 
 from rich.console import Console
 
@@ -24,6 +25,14 @@ REPO_DIR = Path(__file__).resolve().parents[2]
 CACHE_DIR = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "scripts"
 
 console = Console(stderr=True)
+
+
+def prog_name() -> str:
+    """The command name for usage text: argv[0] without directory or extension.
+
+    Tools run via ~/.local/bin/<name> (no extension) or by repo path
+    (python/ai/summarise.py); both show as `summarise`."""
+    return Path(sys.argv[0]).stem
 
 
 def emit(text: str) -> None:
@@ -39,8 +48,8 @@ def load_env() -> None:
     path = REPO_DIR / ".env"
     if not path.is_file():
         return
-    for line in path.read_text().splitlines():
-        line = line.strip()
+    for raw in path.read_text().splitlines():
+        line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, value = line.split("=", 1)
@@ -73,7 +82,8 @@ def tool(name: str) -> str:
     fail(f"Tool not found in repo: {name}")
 
 
-def fail(message: str, hint: str = "", code: int = 1):
+def fail(message: str, hint: str = "", code: int = 1) -> NoReturn:
+    """Print an error (and optional hint) to stderr and exit."""
     console.print(f"[bold red]❌ {message}[/]")
     if hint:
         console.print(f"   {hint}")
@@ -107,7 +117,10 @@ def confirm(question: str, default: bool = False) -> bool:
         with open("/dev/tty") as tty_in, open("/dev/tty", "w") as tty_out:
             rc = subprocess.run(
                 [gum, "confirm", question, f"--default={'true' if default else 'false'}"],
-                stdin=tty_in, stdout=tty_out, stderr=tty_out,
+                stdin=tty_in,
+                stdout=tty_out,
+                stderr=tty_out,
+                check=False,
             ).returncode
         if rc == 130:
             raise KeyboardInterrupt
@@ -132,8 +145,13 @@ def choose(header: str, options: list[str]) -> int | None:
         # Items on stdin; gum reads keys from /dev/tty itself and prints the choice.
         with open("/dev/tty", "w") as tty_out:
             result = subprocess.run(
-                [gum, "choose", "--header", header, "--cursor", "❯ "],
-                input="\n".join(options), stdout=subprocess.PIPE, stderr=tty_out, text=True,
+                # Same cursor glyph as bash/lib/common.sh, deliberately not ">".
+                [gum, "choose", "--header", header, "--cursor", "❯ "],  # noqa: RUF001
+                input="\n".join(options),
+                stdout=subprocess.PIPE,
+                stderr=tty_out,
+                text=True,
+                check=False,
             )
         if result.returncode == 130:
             raise KeyboardInterrupt

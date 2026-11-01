@@ -27,7 +27,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from pytubefix import YouTube, exceptions
+sys.path.insert(0, str(Path(os.path.realpath(__file__)).parents[1] / "lib"))
 from rich.console import Console
 from rich.progress import (
     BarColumn,
@@ -37,9 +37,11 @@ from rich.progress import (
     TimeRemainingColumn,
     TransferSpeedColumn,
 )
+from scriptlib import prog_name
+from ytlib import PytubeFixError, Stream, Video, open_video
 
 console = Console(stderr=True)
-PROG = os.path.basename(sys.argv[0])
+PROG = prog_name()
 
 
 def parse_args() -> argparse.Namespace:
@@ -59,7 +61,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def pick_streams(yt: YouTube):
+def pick_streams(yt: Video) -> tuple[Stream | None, Stream | None]:
     """Best mp4 video stream and best mp4 audio stream."""
     video = (
         yt.streams.filter(adaptive=True, only_video=True, mime_type="video/mp4")
@@ -71,7 +73,7 @@ def pick_streams(yt: YouTube):
     return video, audio
 
 
-def fetch(yt: YouTube, stream, label: str, folder: str, filename: str) -> str:
+def fetch(yt: Video, stream: Stream, label: str, folder: str, filename: str) -> str:
     """Download one stream with a progress bar. Returns the file path."""
     with Progress(
         TextColumn(f"   {label}"),
@@ -82,15 +84,20 @@ def fetch(yt: YouTube, stream, label: str, folder: str, filename: str) -> str:
         console=console,
     ) as progress:
         task = progress.add_task(label, total=stream.filesize)
-        yt.register_on_progress_callback(
-            lambda s, _chunk, remaining: progress.update(task, completed=s.filesize - remaining)
-        )
-        return stream.download(output_path=folder, filename=filename)
+
+        def on_progress(s: Stream, _chunk: bytes, remaining: int) -> None:
+            progress.update(task, completed=s.filesize - remaining)
+
+        yt.register_on_progress_callback(on_progress)
+        path = stream.download(output_path=folder, filename=filename)
+        # pytubefix returns None only when it skips an existing file, which
+        # can't happen here (fresh temp dir or a target checked beforehand).
+        return path or os.path.join(folder, filename)
 
 
-def download_audio(yt: YouTube, output: Path) -> Path | None:
+def download_audio(yt: Video, output: Path) -> Path | None:
     """Save the best mp4 audio stream as .m4a. Returns the path."""
-    audio = yt.streams.filter(only_audio=True, mime_type="audio/mp4").order_by("abr").desc().first()
+    _, audio = pick_streams(yt)
     if audio is None:
         console.print("[bold red]❌ No audio stream found.[/]")
         return None
@@ -111,7 +118,7 @@ def download(url: str, output: Path, audio_only: bool = False) -> Path | None:
     console.print(f"\n[bold cyan]🔍 Looking up[/] [dim]{url}[/]")
     try:
         with console.status("⏳ Fetching video info…"):
-            yt = YouTube(url)
+            yt = open_video(url)
             video, audio = pick_streams(yt)
         if audio_only:
             return download_audio(yt, output)
@@ -138,10 +145,24 @@ def download(url: str, output: Path, audio_only: bool = False) -> Path | None:
             merged = os.path.join(tmp, "merged.mp4")
             with console.status("⏳ Merging with ffmpeg…"):
                 result = subprocess.run(
-                    ["ffmpeg", "-v", "error", "-y", "-i", video_path, "-i", audio_path,
-                     "-c", "copy", "-movflags", "+faststart", merged],
+                    [
+                        "ffmpeg",
+                        "-v",
+                        "error",
+                        "-y",
+                        "-i",
+                        video_path,
+                        "-i",
+                        audio_path,
+                        "-c",
+                        "copy",
+                        "-movflags",
+                        "+faststart",
+                        merged,
+                    ],
                     capture_output=True,
                     text=True,
+                    check=False,
                 )
             if result.returncode != 0:
                 console.print(f"[bold red]❌ ffmpeg failed:[/] {result.stderr.strip()}")
@@ -152,7 +173,7 @@ def download(url: str, output: Path, audio_only: bool = False) -> Path | None:
         console.print(f"[bold green]✅ Saved[/] {target} [dim]({elapsed:.1f}s)[/]")
         return target
 
-    except (exceptions.PytubeFixError, OSError) as e:
+    except (PytubeFixError, OSError) as e:
         console.print(f"[bold red]❌ {type(e).__name__}:[/] {e}")
         return None
 
@@ -174,7 +195,9 @@ def main() -> int:
     ok = sum(1 for path in saved if path)
     failed = len(args.urls) - ok
 
-    console.print(f"\n📊 [green]{ok} downloaded[/]" + (f", [red]{failed} failed[/]" if failed else ""))
+    console.print(
+        f"\n📊 [green]{ok} downloaded[/]" + (f", [red]{failed} failed[/]" if failed else "")
+    )
     return 1 if failed else 0
 
 
