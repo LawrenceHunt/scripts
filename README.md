@@ -32,8 +32,12 @@ falls back to plain bash, so no tool ever hard-fails for want of it.
 
 | Command           | Does                                                                     |
 | ----------------- | ------------------------------------------------------------------------ |
+| `scripts`         | Lists every tool here with what it does, and runs one from a menu        |
 | `gprune`          | Prunes local git branches whose remote branch has been deleted           |
+| `gsw`             | Switches git branches with a fuzzy finder, most recent first             |
 | `portkill` (`pk`) | Shows what is listening on your ports and kills it                       |
+| `space`           | Shows what is using disk space, biggest first, and deletes from a menu   |
+| `nmprune`         | Finds `node_modules` and `.venv` folders by size and deletes old ones    |
 | `ytdl`            | Downloads YouTube videos at the best available resolution                |
 | `yt-transcript`   | Prints a YouTube video's transcript (captions, or transcribes the audio) |
 | `transcribe`      | Transcribes an audio or video file to text (OpenAI)                      |
@@ -61,6 +65,25 @@ gprune --dry-run  # list only
 gprune --yes      # delete all stale branches without prompting
 ```
 
+### scripts (the tool menu)
+
+Run `scripts` to filter the list of tools as you type, then run one, run it with
+arguments, or read its `--help`. Descriptions come from each tool's own header
+line, so the list stays current. Piped, or with `--list`, it prints the list.
+
+### gsw
+
+```sh
+gsw              # fuzzy-pick a branch (filters on name and last commit message)
+gsw auth         # switch straight to the only branch matching "auth"
+gsw -r           # include remote branches you don't have locally yet
+gsw -            # back to the previous branch
+```
+
+oh-my-zsh's git plugin defines `alias gsw='git switch'`, which takes priority over
+this tool. Add `unalias gsw 2>/dev/null` after the line that sources oh-my-zsh in
+`~/.zshrc`.
+
 ### portkill (pk)
 
 ```sh
@@ -78,6 +101,35 @@ It sends `SIGTERM` and waits up to five seconds, then asks before escalating to
 user are flagged with `!` and need `sudo pk <port>`. It refuses to kill pid 1 or
 itself. High ports are hidden from the scan by default because they are nearly always
 app-internal rather than a server you started; the hidden count is always printed.
+
+### space
+
+```sh
+space            # browse your home folder by size
+space /Applications
+space --rm       # delete permanently instead of moving to the Trash
+```
+
+Each folder lists its contents biggest first, with a size bar and percentage, plus
+the disk's free space. Pick a folder to go into it. Pick a file to move it to the
+Trash or show it in Finder. Choose "Delete items here…" to tick several at once.
+Sizes are measured once per session, so going back up is instant. It won't remove
+system folders or your top-level home folders, and it warns before touching
+anything in `~/Library`. Some folders macOS protects (Mail, Messages, Safari)
+measure low unless your terminal has Full Disk Access.
+
+### nmprune
+
+```sh
+nmprune                  # ~/projects: list by size, tick what to remove
+nmprune -o 90            # only projects untouched for 90+ days
+nmprune ~/code --dry-run # list only
+```
+
+Shows each `node_modules` and `.venv` with its size and how long ago the project was
+last touched. It hides folders under 1 MB and any that are committed to git. Removed
+folders go to the Trash (`--rm` deletes them outright); `npm install` or `uv sync`
+brings them back.
 
 ### ytdl
 
@@ -206,8 +258,9 @@ extension (`ytdl.py` → `ytdl`):
 ```text
 bash/
   lib/        common.sh  summary.sh
-  git/        gprune.sh
+  git/        gprune.sh  gsw.sh
   net/        portkill.sh
+  sys/        scripts.sh  space.sh  nmprune.sh
   ai/         yt-summary.sh  pdf-summary.sh
 node/
   lib/        ui.ts
@@ -242,7 +295,9 @@ from `.vscode/extensions.json`; formatting on save then matches `mise run check`
 
 ## Adding a tool
 
-1. Put the executable in `<language>/<theme>/<name>.<ext>` and `chmod +x` it.
+1. Put the executable in `<language>/<theme>/<name>.<ext>` and `chmod +x` it. Give it
+   a header line `<name> — what it does` near the top (in a comment or docstring);
+   `scripts` shows that line.
 2. Bash: start with `#!/usr/bin/env bash` and `set -euo pipefail`, then source
    `bash/lib/common.sh` after resolving the script's real path (it runs via a
    symlink). Python and Node: copy the shebang and the lib import from an existing

@@ -27,8 +27,13 @@ bash/
     summary.sh         # source | summarise [| speak] plumbing for *-summary tools
   git/
     gprune.sh          # prune local branches whose remote is gone
+    gsw.sh             # fuzzy branch switcher, most recent first
   net/
     portkill.sh        # inspect listening ports and kill what holds them (alias: pk)
+  sys/
+    scripts.sh         # menu of every tool in the repo (reads each header line)
+    space.sh           # disk usage browser with delete-to-Trash
+    nmprune.sh         # find and remove node_modules / .venv folders
   ai/
     yt-summary.sh      # yt-transcript URL | summarise [--speak]
     pdf-summary.sh     # pdf2text FILE | summarise [--speak]
@@ -82,6 +87,10 @@ There is a single mechanism. Do not invent per-tool install steps.
 
 To add a new tool: drop the executable in the right `<language>/<theme>/` folder
 with its extension, `chmod +x` it, re-run `./install.sh`, and make `mise run check` pass.
+
+Every tool carries a header line `<name> — <what it does>.` in its top comment
+(or docstring) within the first 20 lines. `scripts` reads that line for its menu,
+so keep it to one short sentence.
 
 ## Toolchains: mise
 
@@ -143,7 +152,7 @@ Every tool should feel like it belongs to the same family:
 
 - **Colour** — use it to structure output (headings, success, warning, error,
   dim detail). Bash tools source `bash/lib/common.sh` for the palette; Python
-  uses `python/lib/scriptlib.py` (rich) and Node `node/lib/ui.mjs`.
+  uses `python/lib/scriptlib.py` (rich) and Node `node/lib/ui.ts`.
 - **Emojis** — express _activity_ (🔍 scanning, ⏳ waiting, 🌿 branches), _outcome_
   (✅ success, ⚠️ warning, ❌ error, 🗑️ deleted), and _stats_ (📊 counts). Keep them
   meaningful, not decorative noise.
@@ -193,11 +202,11 @@ prints the `brew install gum` hint if missing.
 
 Every language has the same gum-backed prompt helpers, each with a fallback:
 
-|                      | single choice | multi choice   | yes/no    | spinner                      |
-| -------------------- | ------------- | -------------- | --------- | ---------------------------- |
-| bash (`common.sh`)   | `menu`        | `multi_select` | `confirm` | `run_with_spinner`           |
-| python (`scriptlib`) | `choose`      | —              | `confirm` | `console.status` (rich)      |
-| node (`ui.mjs`)      | `choose`      | —              | `confirm` | `withSpinner`, `progressBar` |
+|                      | single choice         | multi choice   | yes/no    | spinner                      |
+| -------------------- | --------------------- | -------------- | --------- | ---------------------------- |
+| bash (`common.sh`)   | `menu`, `filter_menu` | `multi_select` | `confirm` | `run_with_spinner`           |
+| python (`scriptlib`) | `choose`              | —              | `confirm` | `console.status` (rich)      |
+| node (`ui.ts`)       | `choose`              | —              | `confirm` | `withSpinner`, `progressBar` |
 
 Prompts talk to `/dev/tty`, so they work mid-pipeline; with no terminal they
 return the default (or cancel) instead of blocking. Use a prompt where it saves
@@ -213,5 +222,9 @@ hard-fail because a nicety isn't installed.
 - Start with `#!/usr/bin/env bash` and `set -euo pipefail`.
 - Source shared helpers by resolving the script's _real_ path first (it will be run
   via a symlink), then sourcing `../lib/common.sh` relative to the real location.
+- Deleting files: use `discard_paths`, which moves them to the Trash (macOS
+  `trash`) unless the tool's `--rm` flag asks for permanent deletion.
+- Target the bash 3.2 that macOS ships: no associative arrays or `mapfile`, and
+  expand possibly-empty arrays as `${arr[@]+"${arr[@]}"}` under `set -u`.
 - Keep tools dependency-light: assume a POSIX environment plus the tool's own domain
   binary (e.g. `git` for git tools). Check for required binaries up front.
