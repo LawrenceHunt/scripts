@@ -126,6 +126,66 @@ speak summary.txt -o out.mp3 --voice Sarah  # or --pick-voice for a menu
 - Transcripts and speech are cached in `~/.cache/scripts/`, so re-running costs
   nothing. `--no-cache` skips the cache.
 
+### Chaining tools
+
+Every AI tool reads stdin and writes plain data to stdout. Progress, prompts and
+errors go to stderr, so they still show in a pipeline without getting mixed into
+the data. Text flows through the pipe as text. Audio is passed as a file path:
+`ytdl --audio` and `speak` print the path of the file they saved when their
+output is piped.
+
+#### YouTube
+
+```sh
+# Download audio, transcribe it, summarise it: the long way round yt-summary
+ytdl --audio URL | transcribe | summarise
+
+# Keep the transcript and the summary
+yt-transcript URL | tee talk.txt | summarise --words 200 > summary.txt
+
+# Compare several videos in one summary (each transcript starts with "# <title>")
+cat urls.txt | xargs -n1 yt-transcript | summarise --prompt "Compare their arguments"
+
+# A spoken briefing of a video, to listen to later
+yt-transcript URL | summarise --words 300 | speak -o briefing.mp3
+```
+
+#### Meetings and other audio
+
+```sh
+# Action items from a recording, read back to you
+transcribe meeting.m4a | summarise --prompt "Just the decisions and action items, as bullets" | speak --play
+
+# Transcribe a batch of files (transcribe takes paths on stdin, one per line)
+ls ~/Recordings/*.m4a | transcribe > all-transcripts.txt
+```
+
+#### PDFs and documents
+
+```sh
+# One chapter as an audiobook-style summary
+pdf2text book.pdf --pages 40-75 | summarise --words 400 | speak -o chapter-3.mp3
+
+# Search a PDF's text
+pdf2text report.pdf | grep -i "revenue"
+```
+
+#### Clipboard and everything else
+
+```sh
+# Summarise whatever you just copied, and put the summary back on the clipboard
+pbpaste | summarise --words 100 | pbcopy
+
+# Hear any text
+pbpaste | speak --play
+
+# speak prints its mp3 path when piped, so it can feed another command
+summarise notes.txt | speak | xargs afplay
+```
+
+`yt-summary` and `pdf-summary` are just the most common chains packaged as
+commands. Add `--speak` to either to hear the result.
+
 ### img-opt / vid-opt / glb-opt / pdf-opt
 
 ```sh
