@@ -1,5 +1,7 @@
 #!/usr/bin/env -S mise exec node@22 -- node
 
+// glb-opt — shrink .glb 3D models (simplify, quantise, meshopt, webp textures).
+
 import fs from "node:fs";
 import path from "node:path";
 import { Logger, NodeIO } from "@gltf-transform/core";

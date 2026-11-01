@@ -1,5 +1,7 @@
 #!/usr/bin/env -S mise exec node@22 -- node
 
+// vid-opt — re-encode video for the web (H.264/AAC, optional webm + poster).
+
 import fs from "node:fs";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";

@@ -1,5 +1,7 @@
 #!/usr/bin/env -S mise exec node@22 -- node
 
+// pdf-opt — compress PDFs with Ghostscript.
+
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import fs from "node:fs";

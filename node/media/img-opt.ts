@@ -1,5 +1,7 @@
 #!/usr/bin/env -S mise exec node@22 -- node
 
+// img-opt — resize and convert images (webp by default) with sharp.
+
 import fs from "node:fs";
 import { spawnSync } from "node:child_process";
 import os from "node:os";
