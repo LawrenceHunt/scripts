@@ -10,13 +10,13 @@ set -euo pipefail
 
 # --- resolve real path (run via symlink) and load shared helpers ------------
 SOURCE="${BASH_SOURCE[0]}"
-while [ -L "$SOURCE" ]; do
+while [[ -L "$SOURCE" ]]; do
   DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
   SOURCE="$(readlink "$SOURCE")"
   [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
 done
 REAL_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
-# shellcheck source=../lib/common.sh
+# shellcheck source=SCRIPTDIR/../lib/common.sh
 source "$REAL_DIR/../lib/common.sh"
 
 # detect_base_ref — the integration branch to test merges against.
@@ -69,10 +69,17 @@ DRY_RUN=false
 ASSUME_YES=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    -n|--dry-run) DRY_RUN=true ;;
-    -y|--yes)     ASSUME_YES=true ;;
-    -h|--help)    usage; exit 0 ;;
-    *) error "Unknown option: $1"; usage >&2; exit 2 ;;
+    -n | --dry-run) DRY_RUN=true ;;
+    -y | --yes) ASSUME_YES=true ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    *)
+      error "Unknown option: $1"
+      usage >&2
+      exit 2
+      ;;
   esac
   shift
 done
@@ -80,8 +87,8 @@ done
 require_cmd git
 
 # --- sanity: inside a work tree ---------------------------------------------
-git rev-parse --is-inside-work-tree >/dev/null 2>&1 \
-  || die "Not inside a git repository."
+git rev-parse --is-inside-work-tree >/dev/null 2>&1 ||
+  die "Not inside a git repository."
 
 REPO_NAME="$(basename "$(git rev-parse --show-toplevel)")"
 CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
@@ -92,8 +99,8 @@ info "Current branch: ${C_BOLD}${CURRENT_BRANCH}${C_RESET}"
 # --- refresh remote-tracking refs -------------------------------------------
 if git remote | grep -q .; then
   run_with_spinner "Fetching and pruning deleted remote branches…" \
-    git fetch --all --prune --quiet \
-    || die "git fetch failed — check your network or remote configuration."
+    git fetch --all --prune --quiet ||
+    die "git fetch failed — check your network or remote configuration."
 else
   warn "No remotes configured; using existing tracking information only."
 fi
@@ -110,8 +117,8 @@ while IFS=$'\t' read -r branch upstream track; do
     STALE_UPSTREAM+=("$upstream")
   fi
 done < <(git for-each-ref \
-           --format='%(refname:short)%09%(upstream:short)%09%(upstream:track)' \
-           refs/heads)
+  --format='%(refname:short)%09%(upstream:short)%09%(upstream:track)' \
+  refs/heads)
 
 TOTAL_LOCAL="$(git for-each-ref refs/heads | wc -l | tr -d ' ')"
 COUNT=${#STALE[@]}
@@ -158,7 +165,10 @@ else
     "Select individually" \
     "Cancel — delete nothing"
   case "$MENU_INDEX" in
-    0) TO_DELETE=("${STALE[@]}"); info "Selected: all $COUNT branch(es)." ;;
+    0)
+      TO_DELETE=("${STALE[@]}")
+      info "Selected: all $COUNT branch(es)."
+      ;;
     1)
       heading "Select branches to delete" "🔎"
       multi_select "Which branches? (space to toggle, Enter to confirm)" "${STALE[@]}"
@@ -166,7 +176,10 @@ else
         TO_DELETE+=("${STALE[$i]}")
       done
       ;;
-    *) info "Cancelled — nothing deleted."; exit 0 ;;
+    *)
+      info "Cancelled — nothing deleted."
+      exit 0
+      ;;
   esac
 fi
 
@@ -196,7 +209,7 @@ for branch in "${TO_DELETE[@]}"; do
     # That is NOT the same as data loss: the real question is whether any commit is
     # reachable from no other ref. Compute the genuinely-orphaned commits.
     unique="$(git log --format='%h%x09%cr%x09%an%x09%s' \
-                "$branch" --not --exclude="refs/heads/$branch" --all 2>/dev/null || true)"
+      "$branch" --not --exclude="refs/heads/$branch" --all 2>/dev/null || true)"
     n_unique="$(printf '%s' "$unique" | grep -c . || true)"
 
     if [[ "$n_unique" -eq 0 ]]; then
@@ -229,7 +242,7 @@ for branch in "${TO_DELETE[@]}"; do
         printf '       %s%s%s\n' "$C_DIM" "$subject" "$C_RESET"
         ((shown++)) || true
         [[ $shown -ge 10 ]] && break
-      done <<< "$unique"
+      done <<<"$unique"
       [[ $n_unique -gt 10 ]] && dim "     … and $((n_unique - 10)) more commit(s)"
       dim "     Review with: git log -p $branch --not --exclude=refs/heads/$branch --all"
 

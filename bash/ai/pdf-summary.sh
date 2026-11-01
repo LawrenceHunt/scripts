@@ -10,16 +10,16 @@ set -euo pipefail
 
 # --- resolve real path (run via symlink) and load shared helpers ------------
 SOURCE="${BASH_SOURCE[0]}"
-while [ -L "$SOURCE" ]; do
+while [[ -L "$SOURCE" ]]; do
   DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
   SOURCE="$(readlink "$SOURCE")"
   [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
 done
 REAL_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 REPO_DIR="$(cd "$REAL_DIR/../.." && pwd)"
-# shellcheck source=../lib/common.sh
+# shellcheck source=SCRIPTDIR/../lib/common.sh
 source "$REAL_DIR/../lib/common.sh"
-# shellcheck source=../lib/summary.sh
+# shellcheck source=SCRIPTDIR/../lib/summary.sh
 source "$REAL_DIR/../lib/summary.sh"
 
 if [[ $# -lt 1 || "$1" == "-h" || "$1" == "--help" ]]; then
@@ -28,7 +28,8 @@ if [[ $# -lt 1 || "$1" == "-h" || "$1" == "--help" ]]; then
   exit 1
 fi
 
-pdf="$1"; shift
+pdf="$1"
+shift
 [[ -f "$pdf" ]] || die "Not a file: $pdf"
 stem="$(basename "${pdf%.*}")-summary"
 
@@ -37,9 +38,19 @@ source_args=("$pdf")
 rest=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --pages)   [[ $# -ge 2 ]] || die "--pages needs a range, e.g. 1-20"; source_args+=(--pages "$2"); shift 2 ;;
-    --pages=*) source_args+=("$1"); shift ;;
-    *)         rest+=("$1"); shift ;;
+    --pages)
+      [[ $# -ge 2 ]] || die "--pages needs a range, e.g. 1-20"
+      source_args+=(--pages "$2")
+      shift 2
+      ;;
+    --pages=*)
+      source_args+=("$1")
+      shift
+      ;;
+    *)
+      rest+=("$1")
+      shift
+      ;;
   esac
 done
 

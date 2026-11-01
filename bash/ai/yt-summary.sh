@@ -10,16 +10,16 @@ set -euo pipefail
 
 # --- resolve real path (run via symlink) and load shared helpers ------------
 SOURCE="${BASH_SOURCE[0]}"
-while [ -L "$SOURCE" ]; do
+while [[ -L "$SOURCE" ]]; do
   DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
   SOURCE="$(readlink "$SOURCE")"
   [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
 done
 REAL_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 REPO_DIR="$(cd "$REAL_DIR/../.." && pwd)"
-# shellcheck source=../lib/common.sh
+# shellcheck source=SCRIPTDIR/../lib/common.sh
 source "$REAL_DIR/../lib/common.sh"
-# shellcheck source=../lib/summary.sh
+# shellcheck source=SCRIPTDIR/../lib/summary.sh
 source "$REAL_DIR/../lib/summary.sh"
 
 if [[ $# -lt 1 || "$1" == "-h" || "$1" == "--help" ]]; then
@@ -28,5 +28,6 @@ if [[ $# -lt 1 || "$1" == "-h" || "$1" == "--help" ]]; then
   exit 1
 fi
 
-url="$1"; shift
+url="$1"
+shift
 summarise_with_speech "yt-summary" "$REPO_DIR/python/ai/yt-transcript.py" "$url" -- "$@"

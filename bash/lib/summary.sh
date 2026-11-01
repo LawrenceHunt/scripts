@@ -10,10 +10,14 @@
 # also saved and voiced with `speak --play`, and the mp3 is written to
 # ./STEM-<timestamp>.mp3.
 summarise_with_speech() {
+  : "${REPO_DIR:?summary.sh: set REPO_DIR before calling summarise_with_speech}"
   local stem="$1" source_tool="$2"
   shift 2
   local source_args=()
-  while [[ $# -gt 0 && "$1" != "--" ]]; do source_args+=("$1"); shift; done
+  while [[ $# -gt 0 && "$1" != "--" ]]; do
+    source_args+=("$1")
+    shift
+  done
   [[ "${1:-}" == "--" ]] && shift
 
   local speak=false arg
@@ -32,8 +36,8 @@ summarise_with_speech() {
   # shellcheck disable=SC2064  # expand now: the path is fixed
   trap "rm -f '$summary_file'" EXIT
 
-  "$source_tool" "${source_args[@]}" \
-    | "$REPO_DIR/python/ai/summarise.py" ${args[@]+"${args[@]}"} \
-    | tee "$summary_file"
+  "$source_tool" "${source_args[@]}" |
+    "$REPO_DIR/python/ai/summarise.py" ${args[@]+"${args[@]}"} |
+    tee "$summary_file"
   "$REPO_DIR/python/ai/speak.py" "$summary_file" --play -o "./${stem}-$(date +%Y%m%d-%H%M%S).mp3"
 }

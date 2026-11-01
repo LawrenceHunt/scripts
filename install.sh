@@ -19,14 +19,14 @@ REPO_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Load shared styling if available; otherwise fall back to plain output.
 if [[ -f "$REPO_DIR/bash/lib/common.sh" ]]; then
-  # shellcheck source=bash/lib/common.sh
+  # shellcheck source=SCRIPTDIR/bash/lib/common.sh
   source "$REPO_DIR/bash/lib/common.sh"
 else
   heading() { printf '\n== %s\n' "$1"; }
-  info()    { printf '• %s\n' "$1"; }
+  info() { printf '• %s\n' "$1"; }
   success() { printf 'OK %s\n' "$1"; }
-  warn()    { printf '! %s\n' "$1" >&2; }
-  stat()    { printf '%s %s\n' "$2" "$1"; }
+  warn() { printf '! %s\n' "$1" >&2; }
+  stat() { printf '%s %s\n' "$2" "$1"; }
   C_BOLD='' C_RESET='' C_DIM='' C_CYAN=''
 fi
 
@@ -120,12 +120,16 @@ case ":$PATH:" in
   *)
     warn "${BIN_DIR} is not on your PATH."
     shell_name="$(basename "${SHELL:-}")"
+    # A literal ~ is intended: these are display strings for the user to read.
+    # shellcheck disable=SC2088
     case "$shell_name" in
-      zsh)  profile="~/.zshrc" ;;
+      zsh) profile="~/.zshrc" ;;
       bash) profile="~/.bashrc" ;;
-      *)    profile="your shell profile" ;;
+      *) profile="your shell profile" ;;
     esac
     printf '   Add this line to %s%s%s and restart your shell:\n\n' "$C_BOLD" "$profile" "$C_RESET"
+    # The line is printed for the user to paste, so $HOME/$PATH must stay unexpanded.
+    # shellcheck disable=SC2016
     printf '     %sexport PATH="$HOME/.local/bin:$PATH"%s\n\n' "$C_CYAN" "$C_RESET"
     ;;
 esac

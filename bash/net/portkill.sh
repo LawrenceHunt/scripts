@@ -13,13 +13,13 @@ set -euo pipefail
 
 # --- resolve real path (run via symlink) and load shared helpers ------------
 SOURCE="${BASH_SOURCE[0]}"
-while [ -L "$SOURCE" ]; do
+while [[ -L "$SOURCE" ]]; do
   DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
   SOURCE="$(readlink "$SOURCE")"
   [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
 done
 REAL_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
-# shellcheck source=../lib/common.sh
+# shellcheck source=SCRIPTDIR/../lib/common.sh
 source "$REAL_DIR/../lib/common.sh"
 
 # How the user invoked us — "portkill" or the short alias "pk". Echoed back in
@@ -65,13 +65,20 @@ PORTS=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    -a|--all)   SHOW_ALL=true ;;
-    -u|--udp)   INCLUDE_UDP=true ;;
-    -l|--list)  LIST_ONLY=true ;;
-    -y|--yes)   ASSUME_YES=true ;;
-    -f|--force) FORCE=true ;;
-    -h|--help)  usage; exit 0 ;;
-    -*)         error "Unknown option: $1"; usage >&2; exit 2 ;;
+    -a | --all) SHOW_ALL=true ;;
+    -u | --udp) INCLUDE_UDP=true ;;
+    -l | --list) LIST_ONLY=true ;;
+    -y | --yes) ASSUME_YES=true ;;
+    -f | --force) FORCE=true ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    -*)
+      error "Unknown option: $1"
+      usage >&2
+      exit 2
+      ;;
     *)
       if [[ "$1" =~ ^[0-9]+$ ]] && [[ "$1" -ge 1 && "$1" -le 65535 ]]; then
         PORTS+=("$1")
@@ -118,18 +125,26 @@ lsof_fields() {
         printf '%s\t%s\t%s\t%s\t%s\n' "$port" "$proto" "$pid" "$cmd" "$addr"
         ;;
     esac
-  done <<< "$out"
+  done <<<"$out"
 }
 
 # scan_rows [port ...] — fill the ROW_* arrays with one entry per port/pid pair,
 # sorted by port. With port arguments, only those ports are kept and the
 # ephemeral-range filter is ignored (you asked for it by number, you get it).
-ROW_PORT=(); ROW_PROTO=(); ROW_PID=(); ROW_CMD=(); ROW_ADDR=()
+ROW_PORT=()
+ROW_PROTO=()
+ROW_PID=()
+ROW_CMD=()
+ROW_ADDR=()
 scan_rows() {
   local wanted=" $* "
   local raw port proto pid cmd addr
 
-  ROW_PORT=(); ROW_PROTO=(); ROW_PID=(); ROW_CMD=(); ROW_ADDR=()
+  ROW_PORT=()
+  ROW_PROTO=()
+  ROW_PID=()
+  ROW_CMD=()
+  ROW_ADDR=()
 
   raw="$(
     {
@@ -147,20 +162,29 @@ scan_rows() {
       HIDDEN=$((HIDDEN + 1))
       continue
     fi
-    ROW_PORT+=("$port"); ROW_PROTO+=("$proto"); ROW_PID+=("$pid")
-    ROW_CMD+=("$cmd");   ROW_ADDR+=("$addr")
-  done <<< "$raw"
+    ROW_PORT+=("$port")
+    ROW_PROTO+=("$proto")
+    ROW_PID+=("$pid")
+    ROW_CMD+=("$cmd")
+    ROW_ADDR+=("$addr")
+  done <<<"$raw"
 }
 
 # ---------------------------------------------------------------------------
 # Process detail (owner, uptime, full command line)
 # ---------------------------------------------------------------------------
 
-PI_PID=(); PI_USER=(); PI_ETIME=(); PI_CMDLINE=()
+PI_PID=()
+PI_USER=()
+PI_ETIME=()
+PI_CMDLINE=()
 
 # load_pinfo — one ps call for every pid currently in ROW_PID.
 load_pinfo() {
-  PI_PID=(); PI_USER=(); PI_ETIME=(); PI_CMDLINE=()
+  PI_PID=()
+  PI_USER=()
+  PI_ETIME=()
+  PI_CMDLINE=()
   [[ ${#ROW_PID[@]} -eq 0 ]] && return 0
 
   local list p u e c
@@ -169,7 +193,10 @@ load_pinfo() {
 
   while read -r p u e c; do
     [[ -z "$p" ]] && continue
-    PI_PID+=("$p"); PI_USER+=("$u"); PI_ETIME+=("$e"); PI_CMDLINE+=("$c")
+    PI_PID+=("$p")
+    PI_USER+=("$u")
+    PI_ETIME+=("$e")
+    PI_CMDLINE+=("$c")
   done < <(ps -o pid=,user=,etime=,command= -p "$list" 2>/dev/null || true)
 }
 
@@ -178,21 +205,28 @@ pi_index() {
   local want="$1" i
   [[ ${#PI_PID[@]} -eq 0 ]] && return 0
   for i in "${!PI_PID[@]}"; do
-    if [[ "${PI_PID[$i]}" == "$want" ]]; then printf '%s' "$i"; return 0; fi
+    if [[ "${PI_PID[$i]}" == "$want" ]]; then
+      printf '%s' "$i"
+      return 0
+    fi
   done
 }
 
-pi_field() {   # pi_field PID user|etime|cmdline
-  local idx; idx="$(pi_index "$1")"
-  [[ -z "$idx" ]] && { printf '?'; return 0; }
+pi_field() { # pi_field PID user|etime|cmdline
+  local idx
+  idx="$(pi_index "$1")"
+  [[ -z "$idx" ]] && {
+    printf '?'
+    return 0
+  }
   case "$2" in
-    user)    printf '%s' "${PI_USER[$idx]}" ;;
-    etime)   printf '%s' "${PI_ETIME[$idx]}" ;;
+    user) printf '%s' "${PI_USER[$idx]}" ;;
+    etime) printf '%s' "${PI_ETIME[$idx]}" ;;
     cmdline) printf '%s' "${PI_CMDLINE[$idx]}" ;;
   esac
 }
 
-truncate_to() {  # truncate_to WIDTH STRING
+truncate_to() { # truncate_to WIDTH STRING
   local w="$1" s="$2"
   if [[ ${#s} -gt $w ]]; then printf '%s…' "${s:0:$((w - 1))}"; else printf '%s' "$s"; fi
 }
@@ -206,8 +240,11 @@ print_table() {
   printf '\n%s  %-7s %-6s %-8s %-14s %-26s %-17s %s%s\n' \
     "$C_DIM" PORT PROTO PID USER COMMAND BOUND UPTIME "$C_RESET"
   for i in "${!ROW_PORT[@]}"; do
-    port="${ROW_PORT[$i]}"; proto="${ROW_PROTO[$i]}"; pid="${ROW_PID[$i]}"
-    cmd="${ROW_CMD[$i]}";   addr="${ROW_ADDR[$i]}"
+    port="${ROW_PORT[$i]}"
+    proto="${ROW_PROTO[$i]}"
+    pid="${ROW_PID[$i]}"
+    cmd="${ROW_CMD[$i]}"
+    addr="${ROW_ADDR[$i]}"
     user="$(pi_field "$pid" user)"
     etime="$(pi_field "$pid" etime)"
     # Flag anything not owned by you — killing it will need sudo.
@@ -285,7 +322,7 @@ kill_row() {
   info "Owner:   ${user}"
   info "Bound:   ${addr}:${port}"
   info "Uptime:  ${etime}"
-  dim  "  $(truncate_to 110 "$cmdline")"
+  dim "  $(truncate_to 110 "$cmdline")"
 
   # --- guards --------------------------------------------------------------
   if [[ "$pid" -eq 1 ]]; then
@@ -298,7 +335,7 @@ kill_row() {
   fi
   if [[ "$user" != "$ME" && "$user" != "?" ]]; then
     warn "Owned by '${user}', not you — the signal will likely be refused."
-    dim  "   Retry with: sudo ${PROG} ${port}"
+    dim "   Retry with: sudo ${PROG} ${port}"
   fi
 
   if ! $ASSUME_YES; then
@@ -380,7 +417,7 @@ run_for_ports() {
 
   echo
   stat "killed" "$killed"
-  [[ $kept -gt 0 ]]  && stat "kept/failed" "$kept"
+  [[ $kept -gt 0 ]] && stat "kept/failed" "$kept"
   [[ $empty -gt 0 ]] && stat "already free" "$empty"
   success "Done." "🎉"
 }
