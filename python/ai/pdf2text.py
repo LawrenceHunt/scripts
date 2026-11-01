@@ -81,6 +81,8 @@ def extract(path: Path, spec: str | None) -> str:
         fail(f"{path.name} is password-protected.")
 
     pages = page_numbers(spec, doc.page_count)
+    if not pages:
+        fail(f"No pages in range {spec} — {path.name} has {doc.page_count} pages.")
     title = (doc.metadata or {}).get("title") or path.stem
     console.print(
         f"[bold cyan]📄 Reading[/] {path.name} "
