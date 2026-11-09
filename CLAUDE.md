@@ -99,7 +99,7 @@ be on `PATH`. `mise.toml` at the repo root declares the versions, and each
 non-bash tool pins the same versions in its shebang so it runs correctly from
 any directory:
 
-- **Python** — `#!/usr/bin/env -S mise exec python@3.13 uv@0.9 -- uv run --quiet --script`,
+- **Python** — `#!/usr/bin/env -S mise exec python@3.13 uv@0.11 -- uv run --quiet --script`,
   with dependencies declared inline in a PEP 723 `# /// script` block. uv builds
   and caches the environment on first run; there is no venv or lockfile to manage.
 - **Node** — TypeScript, run directly by Node 22's type stripping (no build step):

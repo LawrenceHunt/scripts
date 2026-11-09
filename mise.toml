@@ -1,12 +1,12 @@
 # Toolchain for the scripts in this repo. Tools also pin their runtime in the
 # shebang so they work from any directory once symlinked into ~/.local/bin:
-#   python: #!/usr/bin/env -S mise exec python@3.13 uv@0.9 -- uv run --quiet --script
+#   python: #!/usr/bin/env -S mise exec python@3.13 uv@0.11 -- uv run --quiet --script
 #   node:   #!/usr/bin/env -S mise exec node@22 -- node
 # Keep the two in step when bumping a version.
 [tools]
 node = "22"
 python = "3.13"
-uv = "0.9"
+uv = "0.11"
 # hygiene
 ruff = "0.17"
 shellcheck = "0.11"

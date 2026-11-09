@@ -1,4 +1,4 @@
-#!/usr/bin/env -S mise exec python@3.13 uv@0.9 -- uv run --quiet --script
+#!/usr/bin/env -S mise exec python@3.13 uv@0.11 -- uv run --quiet --script
 # /// script
 # requires-python = ">=3.13"
 # dependencies = ["openai>=2.8", "rich>=13"]
