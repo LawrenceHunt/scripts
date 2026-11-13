@@ -48,9 +48,11 @@ node/
 python/
   lib/
     scriptlib.py       # stderr console, stdout emit, .env, cache, gum confirm/choose
+    check_deps.py      # lint check: PEP 723 blocks match pyproject's dev group
     ytlib.py           # typed boundary around pytubefix (untyped library)
   media/
     ytdl.py            # download YouTube videos (merges streams with ffmpeg)
+    zlstrip.py         # strip the z-library tag from downloaded file names
   ai/
     yt-transcript.py   # captions, or ytdl --audio | transcribe as a fallback
     transcribe.py      # audio/video -> text (OpenAI)
@@ -133,11 +135,15 @@ clean `mise run check` means no squiggles with editor defaults.
 
 - `mise run setup` creates `node_modules` and `.venv` (the IDE's Python
   interpreter: one env holding every tool's deps, from `pyproject.toml`).
+  `mise.toml` activates `.venv` on `cd`, so inside the repo
+  `python3 python/<theme>/<tool>.py` also works; the shebang path never uses it.
 - `mise run check` runs everything without changing files; it must pass before
   committing. `mise run fix` auto-fixes and formats; `format`, `lint` and
   `typecheck` run one stage.
 - When a Python tool gains a dependency, add it both to its PEP 723 block and to
-  `[dependency-groups].dev` in `pyproject.toml`, or pyright can't see it.
+  `[dependency-groups].dev` in `pyproject.toml` (then `mise run setup`), or
+  pyright and `python3 <tool>.py` can't see it. `mise run lint` fails if the two
+  lists disagree on a package or its version specifier (`check_deps.py`).
 - Fix the cause rather than suppressing. When a suppression is genuinely right,
   scope it to one line and one rule, with a reason:
   `# pyright: ignore[rule]  # why`, `// eslint-disable-next-line rule -- why`,

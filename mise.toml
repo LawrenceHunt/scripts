@@ -12,6 +12,11 @@ ruff = "0.17"
 shellcheck = "0.11"
 shfmt = "3.14"
 
+# Activate the repo venv on cd, so `python3 python/<theme>/<tool>.py` has every
+# tool's deps. The shebangs don't use it; they run through uv.
+[env]
+_.python.venv = { path = ".venv" }
+
 [tasks.install]
 description = "Install Node deps and symlink every tool into ~/.local/bin"
 run = "./install.sh"
@@ -33,6 +38,7 @@ run = [
 description = "Lint (no changes)"
 run = [
   "ruff check",
+  "python3 python/lib/check_deps.py",
   "npx eslint .",
   "shellcheck -x install.sh bash/*/*.sh",
   "npx markdownlint-cli2 '**/*.md' '#node_modules' '#.venv'",

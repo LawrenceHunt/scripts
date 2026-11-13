@@ -1,7 +1,8 @@
 # Dev-only project: gives the IDE and type checker one environment containing
 # every Python tool's dependencies. The tools themselves don't use it — each
 # declares its own deps inline (PEP 723) and runs via `uv run --script`.
-# Keep [dependency-groups].dev in step with those inline blocks.
+# Keep [dependency-groups].dev in step with those inline blocks; `mise run lint`
+# enforces it (python/lib/check_deps.py).
 [project]
 name = "scripts"
 version = "0"
