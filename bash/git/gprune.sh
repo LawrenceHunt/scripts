@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 #
-# gprune — prune local git branches whose upstream remote branch is gone.
+# gprune — prune local git branches in stages, from merged work to abandoned work.
 #
-# Fetches with --prune to refresh remote-tracking refs, finds local branches
-# whose upstream has been deleted on the remote, lists them with detail, and
-# prompts before deleting.
+# Fetches with --prune, sorts every local branch into a stage by how safe it is
+# to delete (remote gone and merged, merged, PR merged, PR closed, no PR), then
+# shows each stage as a checklist. Safe stages start ticked, risky ones start
+# unticked. Every deleted branch is written to a restore file first.
 #
 set -euo pipefail
 
@@ -18,6 +19,8 @@ done
 REAL_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 # shellcheck source=SCRIPTDIR/../lib/common.sh
 source "$REAL_DIR/../lib/common.sh"
+
+STAGE_COUNT=5
 
 # detect_base_ref — the integration branch to test merges against.
 # Prefers the remote's default branch (origin/HEAD), then common fallbacks.
@@ -47,21 +50,83 @@ is_squash_merged() {
   [[ "$(git cherry "$base" "$dangling" 2>/dev/null)" == "-"* ]]
 }
 
+# is_merged BRANCH BASE — true if every change on BRANCH is already in BASE.
+is_merged() {
+  git merge-base --is-ancestor "$1" "$2" 2>/dev/null || is_squash_merged "$1" "$2"
+}
+
+# commits_only_here BRANCH — how many commits on BRANCH no other ref reaches,
+# i.e. what deleting it would lose.
+commits_only_here() {
+  git rev-list --count "$1" --not --exclude="refs/heads/$1" --all 2>/dev/null || echo 0
+}
+
+# pr_for BRANCH — "<state><TAB><number>" of the pull request whose head is BRANCH.
+# When several share the name, an open PR wins, then a merged one.
+pr_for() {
+  printf '%s\n' "$PR_STATES" | awk -F'\t' -v b="$1" '
+    $1 == b {
+      rank = ($2 == "OPEN") ? 3 : ($2 == "MERGED") ? 2 : 1
+      if (rank > best) { best = rank; found = $2 "\t" $3 }
+    }
+    END { if (found != "") print found }'
+}
+
+# stage_title N / stage_guidance N / stage_checked N — how each stage is presented.
+stage_title() {
+  case "$1" in
+    1) printf 'Remote deleted, already merged' ;;
+    2) printf 'Merged into %s' "$BASE_REF" ;;
+    3) printf "PR merged, but some commits aren't in %s" "$BASE_REF" ;;
+    4) printf 'PR closed without merging' ;;
+    5) if $HAVE_PRS; then printf 'No pull request'; else printf 'Not merged'; fi ;;
+  esac
+}
+stage_guidance() {
+  case "$1" in
+    1) printf 'Their remote branch is gone and every change is in %s. Nothing is lost by deleting them.' "$BASE_REF" ;;
+    2) printf 'Every change is in %s (merged or squashed), though the remote branch may still exist. Nothing is lost by deleting them.' "$BASE_REF" ;;
+    3) printf "GitHub says the PR merged, but git can't match every change in %s: usually review fixups or commits made after merging. Check the commits-only-here count." "$BASE_REF" ;;
+    4) printf "Abandoned or replaced work. Commits only here are lost when the branch is deleted, apart from the restore file." ;;
+    5) if $HAVE_PRS; then
+      printf 'Backups, scratch work and checkouts that never had a PR. Commits only here are lost when the branch is deleted, apart from the restore file.'
+    else
+      printf "Branches git can't show are merged. Without PR state they aren't split further. Commits only here are lost when deleted, apart from the restore file."
+    fi ;;
+  esac
+}
+stage_checked() { [[ "$1" -le 3 ]]; }
+
 usage() {
   cat <<EOF
-${C_BOLD}gprune${C_RESET} — prune local branches whose remote was deleted
+${C_BOLD}gprune${C_RESET} — prune local branches in stages, from merged work to abandoned work
 
 ${C_BOLD}Usage:${C_RESET}
   gprune [options]
 
 ${C_BOLD}Options:${C_RESET}
-  -n, --dry-run    List stale branches but never delete
-  -y, --yes        Delete all stale branches without prompting (still skips current)
+  -n, --dry-run    List every stage but never delete
+  -y, --yes        Delete stages 1–2 (already merged) without prompting; skip the rest
   -h, --help       Show this help
 
-${C_BOLD}What counts as "stale":${C_RESET}
-  A local branch that tracks an upstream which no longer exists on the remote
-  (git reports it as ${C_DIM}[gone]${C_RESET} after a prune-fetch).
+${C_BOLD}Stages${C_RESET} (each branch appears in the first one it matches):
+  1. Remote deleted, already merged     ${C_DIM}starts ticked${C_RESET}
+  2. Merged into the default branch     ${C_DIM}starts ticked${C_RESET}
+  3. PR merged, but commits remain      ${C_DIM}starts ticked${C_RESET}
+  4. PR closed without merging          ${C_DIM}starts unticked${C_RESET}
+  5. No pull request                    ${C_DIM}starts unticked${C_RESET}
+
+  Each stage is a checklist: space toggles, Enter then asks to delete the ticked
+  branches, Esc skips the stage, Ctrl-C stops. Stages 3–4 need the gh CLI;
+  without it those branches go in stage 5.
+
+${C_BOLD}Never shown:${C_RESET}
+  The current branch, the default branch, branches checked out in a worktree
+  and branches with an open PR.
+
+${C_BOLD}Undo:${C_RESET}
+  Deleted branches are written to a restore file (path printed at the end).
+  Run it with bash to recreate them while git still has the commits.
 EOF
 }
 
@@ -90,7 +155,8 @@ require_cmd git
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 ||
   die "Not inside a git repository."
 
-REPO_NAME="$(basename "$(git rev-parse --show-toplevel)")"
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+REPO_NAME="$(basename "$REPO_ROOT")"
 CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 
 heading "gprune · $REPO_NAME" "🌿"
@@ -105,164 +171,227 @@ else
   warn "No remotes configured; using existing tracking information only."
 fi
 
-# --- collect stale branches -------------------------------------------------
-# Format: "<branch>\t<upstream>\t<track>" ; a gone upstream shows "[gone]".
-declare -a STALE=()
-declare -a STALE_UPSTREAM=()
-
-while IFS=$'\t' read -r branch upstream track; do
-  [[ -z "$branch" ]] && continue
-  if [[ "$track" == *"[gone]"* ]]; then
-    STALE+=("$branch")
-    STALE_UPSTREAM+=("$upstream")
-  fi
-done < <(git for-each-ref \
-  --format='%(refname:short)%09%(upstream:short)%09%(upstream:track)' \
-  refs/heads)
-
-TOTAL_LOCAL="$(git for-each-ref refs/heads | wc -l | tr -d ' ')"
-COUNT=${#STALE[@]}
-
-stat "local branches" "$TOTAL_LOCAL"
-stat "stale (remote deleted)" "$COUNT"
-
-if [[ $COUNT -eq 0 ]]; then
-  success "Nothing to prune — every tracked branch still has its remote. 🎉"
-  exit 0
-fi
-
-# --- list them with detail --------------------------------------------------
-heading "Stale branches" "🗂️"
-for i in "${!STALE[@]}"; do
-  branch="${STALE[$i]}"
-  upstream="${STALE_UPSTREAM[$i]}"
-  # last commit info for context (tab-separated so multi-word fields stay intact)
-  IFS=$'\t' read -r sha reldate subject < <(
-    git log -1 --format='%h%x09%cr%x09%s' "$branch" 2>/dev/null || printf '?\t?\t?'
-  )
-  marker="  "
-  [[ "$branch" == "$CURRENT_BRANCH" ]] && marker="${C_YELLOW}*${C_RESET} "
-  printf '%s%s%-30s%s %sgone:%s %s\n' \
-    "$marker" "$C_BOLD" "$branch" "$C_RESET" "$C_DIM" "$C_RESET" "${upstream:-<none>}"
-  printf '     %s%s · %s · %s%s\n' "$C_DIM" "$sha" "$reldate" "$subject" "$C_RESET"
-done
-
-if $DRY_RUN; then
-  echo
-  info "Dry run — no branches deleted." "🧪"
-  exit 0
-fi
-
-# --- decide what to delete --------------------------------------------------
-declare -a TO_DELETE=()
-
-if $ASSUME_YES; then
-  TO_DELETE=("${STALE[@]}")
-else
-  echo
-  menu "Delete these branches?" \
-    "Delete all $COUNT stale branch(es)" \
-    "Select individually" \
-    "Cancel — delete nothing"
-  case "$MENU_INDEX" in
-    0)
-      TO_DELETE=("${STALE[@]}")
-      info "Selected: all $COUNT branch(es)."
-      ;;
-    1)
-      heading "Select branches to delete" "🔎"
-      multi_select "Which branches? (space to toggle, Enter to confirm)" "${STALE[@]}"
-      for i in ${MULTI_SELECTED[@]+"${MULTI_SELECTED[@]}"}; do
-        TO_DELETE+=("${STALE[$i]}")
-      done
-      ;;
-    *)
-      info "Cancelled — nothing deleted."
-      exit 0
-      ;;
-  esac
-fi
-
-if [[ ${#TO_DELETE[@]} -eq 0 ]]; then
-  info "Nothing selected — nothing deleted."
-  exit 0
-fi
-
-# --- delete -----------------------------------------------------------------
-heading "Deleting ${#TO_DELETE[@]} branch(es)" "🗑️"
 BASE_REF="$(detect_base_ref || true)"
-deleted=0
-skipped=0
-for branch in "${TO_DELETE[@]}"; do
-  if [[ "$branch" == "$CURRENT_BRANCH" ]]; then
-    warn "Skipping '$branch' — it is the current branch. Switch away first."
-    ((skipped++)) || true
+BASE_BRANCH="${BASE_REF#origin/}"
+if [[ -n "$BASE_REF" ]]; then
+  info "Default branch: ${C_BOLD}${BASE_REF}${C_RESET}"
+else
+  warn "No default branch found (origin/HEAD, main or master), so no branch counts as merged."
+fi
+
+# --- pull request state (optional: needs gh) --------------------------------
+# Lines of "<head branch><TAB><state><TAB><number>".
+PR_STATES=""
+HAVE_PRS=false
+if command -v gh >/dev/null 2>&1; then
+  PR_FILE="$(mktemp)"
+  trap 'rm -f "$PR_FILE"' EXIT
+  # The spinner runs a command, so a tiny sh -c writes gh's output to the file.
+  # shellcheck disable=SC2016  # $1 is expanded by that inner sh, not here
+  if run_with_spinner "Looking up pull requests on GitHub…" \
+    sh -c 'gh pr list --state all --limit 5000 --json headRefName,state,number \
+      --jq ".[] | [.headRefName, .state, (.number | tostring)] | @tsv" >"$1" 2>/dev/null' \
+    _ "$PR_FILE"; then
+    PR_STATES="$(cat "$PR_FILE")"
+    HAVE_PRS=true
+  else
+    warn "Couldn't list pull requests with gh (not a GitHub repo, or not logged in?)."
+  fi
+else
+  warn "gh isn't installed, so pull request state is unknown."
+fi
+$HAVE_PRS || dim "   Unmerged branches all go in the last stage, and open PRs can't be held back."
+
+# --- sort branches into stages ----------------------------------------------
+WORKTREE_BRANCHES="$(git worktree list --porcelain | sed -n 's|^branch refs/heads/||p')"
+TOTAL_LOCAL="$(git for-each-ref refs/heads | wc -l | tr -d ' ')"
+
+declare -a CAND_BRANCH=() CAND_STAGE=() CAND_DETAIL=()
+held_back_worktree=0
+held_back_open=0
+
+info "Checking $TOTAL_LOCAL local branches…" "🔍"
+# Fields are split on \x1f, not tabs: read merges runs of whitespace separators,
+# so an empty upstream field would shift the rest along.
+while IFS=$'\x1f' read -r branch track reldate subject; do
+  [[ -z "$branch" ]] && continue
+  [[ "$branch" == "$CURRENT_BRANCH" || "$branch" == "$BASE_BRANCH" ]] && continue
+  if grep -qxF "$branch" <<<"$WORKTREE_BRANCHES"; then
+    ((held_back_worktree++)) || true
     continue
   fi
 
-  # Try a safe delete first; fall back to force with explicit consent.
-  if git branch -d "$branch" >/dev/null 2>&1; then
-    success "Deleted ${C_BOLD}${branch}${C_RESET}"
-    ((deleted++)) || true
-  else
-    # 'git branch -d' refuses when the branch isn't merged into local HEAD/upstream.
-    # That is NOT the same as data loss: the real question is whether any commit is
-    # reachable from no other ref. Compute the genuinely-orphaned commits.
-    unique="$(git log --format='%h%x09%cr%x09%an%x09%s' \
-      "$branch" --not --exclude="refs/heads/$branch" --all 2>/dev/null || true)"
-    n_unique="$(printf '%s' "$unique" | grep -c . || true)"
-
-    if [[ "$n_unique" -eq 0 ]]; then
-      # Every commit lives on another ref (typically origin/main after fetch) —
-      # not merged into local HEAD, but safe to remove with nothing lost.
-      if git branch -D "$branch" >/dev/null 2>&1; then
-        success "Deleted ${C_BOLD}${branch}${C_RESET} ${C_DIM}(already merged on another ref)${C_RESET}"
-        ((deleted++)) || true
-      else
-        error "Failed to delete '$branch'."
-        ((skipped++)) || true
-      fi
-    elif [[ -n "$BASE_REF" ]] && is_squash_merged "$branch" "$BASE_REF"; then
-      # SHAs differ from BASE_REF, but the whole diff is already there as one patch:
-      # a squash/rebase merge. The orphaned commit objects carry no unmerged change.
-      if git branch -D "$branch" >/dev/null 2>&1; then
-        success "Deleted ${C_BOLD}${branch}${C_RESET} ${C_DIM}(squash-merged into ${BASE_REF})${C_RESET}"
-        ((deleted++)) || true
-      else
-        error "Failed to delete '$branch'."
-        ((skipped++)) || true
-      fi
-    else
-      warn "'$branch' has ${n_unique} commit(s) not on any other branch${BASE_REF:+ and not squash-merged into $BASE_REF}:"
-      shown=0
-      while IFS=$'\t' read -r sha reldate author subject; do
-        [[ -z "$sha" ]] && continue
-        printf '     %s%s%s  %s%s · %s%s\n' \
-          "$C_YELLOW" "$sha" "$C_RESET" "$C_DIM" "$reldate" "$author" "$C_RESET"
-        printf '       %s%s%s\n' "$C_DIM" "$subject" "$C_RESET"
-        ((shown++)) || true
-        [[ $shown -ge 10 ]] && break
-      done <<<"$unique"
-      [[ $n_unique -gt 10 ]] && dim "     … and $((n_unique - 10)) more commit(s)"
-      dim "     Review with: git log -p $branch --not --exclude=refs/heads/$branch --all"
-
-      if confirm "  Force-delete ${branch} and permanently lose these ${n_unique} commit(s)?" n; then
-        if git branch -D "$branch" >/dev/null 2>&1; then
-          success "Force-deleted ${C_BOLD}${branch}${C_RESET}" "🗑️"
-          ((deleted++)) || true
-        else
-          error "Failed to delete '$branch'."
-          ((skipped++)) || true
-        fi
-      else
-        info "Kept '$branch'."
-        ((skipped++)) || true
-      fi
+  pr_state="" pr_number=""
+  if $HAVE_PRS; then
+    pr="$(pr_for "$branch")"
+    if [[ -n "$pr" ]]; then
+      pr_state="${pr%%$'\t'*}"
+      pr_number="${pr##*$'\t'}"
     fi
   fi
+  if [[ "$pr_state" == OPEN ]]; then
+    ((held_back_open++)) || true
+    continue
+  fi
+
+  merged=false
+  [[ -n "$BASE_REF" ]] && is_merged "$branch" "$BASE_REF" && merged=true
+  if $merged && [[ "$track" == *"[gone]"* ]]; then
+    stage=1
+  elif $merged; then
+    stage=2
+  elif [[ "$pr_state" == MERGED ]]; then
+    stage=3
+  elif [[ "$pr_state" == CLOSED ]]; then
+    stage=4
+  else
+    stage=5
+  fi
+
+  detail="$reldate"
+  [[ -n "$pr_number" ]] && detail+=" · PR #$pr_number"
+  if [[ $stage -ge 3 ]]; then
+    only_here="$(commits_only_here "$branch")"
+    if [[ "$only_here" -eq 0 ]]; then
+      detail+=" · no commits only here"
+    else
+      detail+=" · $only_here commit(s) only here"
+    fi
+  fi
+  [[ ${#subject} -gt 50 ]] && subject="${subject:0:49}…"
+  detail+=" · $subject"
+
+  CAND_BRANCH+=("$branch")
+  CAND_STAGE+=("$stage")
+  CAND_DETAIL+=("$detail")
+done < <(git for-each-ref --sort=committerdate \
+  --format='%(refname:short)%1f%(upstream:track)%1f%(committerdate:relative)%1f%(contents:subject)' \
+  refs/heads)
+
+stat "local branches" "$TOTAL_LOCAL"
+for ((stage = 1; stage <= STAGE_COUNT; stage++)); do
+  n=0
+  for s in ${CAND_STAGE[@]+"${CAND_STAGE[@]}"}; do [[ $s -eq $stage ]] && ((n++)) || true; done
+  stat "stage $stage · $(stage_title "$stage")" "$n"
+done
+held_back="the current branch${BASE_BRANCH:+, $BASE_BRANCH}"
+[[ $held_back_worktree -gt 0 ]] && held_back+=", $held_back_worktree checked out in a worktree"
+[[ $held_back_open -gt 0 ]] && held_back+=", $held_back_open with an open PR"
+dim "   Not shown: $held_back."
+
+if [[ ${#CAND_BRANCH[@]} -eq 0 ]]; then
+  success "Nothing to prune. 🎉"
+  exit 0
+fi
+
+# --- delete, recording each branch in a restore file first ------------------
+RESTORE_FILE=""
+deleted=0
+failed=0
+
+# record_restore BRANCH SHA — append a line that recreates BRANCH at SHA.
+record_restore() {
+  if [[ -z "$RESTORE_FILE" ]]; then
+    local dir="${XDG_STATE_HOME:-$HOME/.local/state}/scripts/gprune"
+    mkdir -p "$dir"
+    RESTORE_FILE="$dir/$REPO_NAME-$(date +%Y%m%d-%H%M%S).sh"
+    {
+      printf '# gprune restore file: recreates the branches deleted from %s on %s.\n' \
+        "$REPO_ROOT" "$(date '+%Y-%m-%d %H:%M')"
+      printf '# Run with bash. Git keeps unreferenced commits for at least two weeks.\n'
+      printf 'cd %q || exit 1\n' "$REPO_ROOT"
+    } >"$RESTORE_FILE"
+  fi
+  printf 'git branch %q %s\n' "$1" "$2" >>"$RESTORE_FILE"
+}
+
+# delete_branches BRANCH... — force-delete each (ticking it was the consent).
+delete_branches() {
+  local branch sha
+  for branch in "$@"; do
+    sha="$(git rev-parse --verify --quiet "refs/heads/$branch")" || sha=""
+    if [[ -n "$sha" ]] && git branch -D "$branch" >/dev/null 2>&1; then
+      record_restore "$branch" "$sha"
+      success "Deleted ${C_BOLD}${branch}${C_RESET}" "🗑️"
+      ((deleted++)) || true
+    else
+      error "Failed to delete '$branch'."
+      ((failed++)) || true
+    fi
+  done
+}
+
+# --- work through the stages ------------------------------------------------
+for ((stage = 1; stage <= STAGE_COUNT; stage++)); do
+  heading "Stage $stage of $STAGE_COUNT · $(stage_title "$stage")" "🗂️"
+
+  declare -a branches=() details=()
+  for i in "${!CAND_BRANCH[@]}"; do
+    if [[ ${CAND_STAGE[$i]} -eq $stage ]]; then
+      branches+=("${CAND_BRANCH[$i]}")
+      details+=("${CAND_DETAIL[$i]}")
+    fi
+  done
+  if [[ ${#branches[@]} -eq 0 ]]; then
+    dim "   None."
+    continue
+  fi
+  info "$(stage_guidance "$stage")"
+
+  # One label per branch: the name padded to the stage's longest (capped, so one
+  # very long name doesn't push every row right), then detail.
+  width=0
+  for b in "${branches[@]}"; do [[ ${#b} -gt $width ]] && width=${#b}; done
+  [[ $width -gt 45 ]] && width=45
+  declare -a labels=()
+  for i in "${!branches[@]}"; do
+    labels+=("$(printf '%-*s  %s' "$width" "${branches[$i]}" "${details[$i]}")")
+  done
+
+  if $DRY_RUN; then
+    for label in "${labels[@]}"; do printf '  %s\n' "$label"; done
+    continue
+  fi
+
+  declare -a to_delete=()
+  if $ASSUME_YES; then
+    if [[ $stage -le 2 ]]; then
+      to_delete=("${branches[@]}")
+    else
+      for label in "${labels[@]}"; do printf '  %s\n' "$label"; done
+      info "Skipped: --yes only deletes branches that are already merged."
+      continue
+    fi
+  else
+    checked=()
+    stage_checked "$stage" && checked=(--checked)
+    multi_select ${checked[@]+"${checked[@]}"} \
+      "Space toggles, a = all, Enter to confirm, Esc skips this stage" "${labels[@]}"
+    for i in ${MULTI_SELECTED[@]+"${MULTI_SELECTED[@]}"}; do
+      to_delete+=("${branches[$i]}")
+    done
+    if [[ ${#to_delete[@]} -eq 0 ]]; then
+      info "Kept all ${#branches[@]} branch(es) in this stage."
+      continue
+    fi
+    for b in "${to_delete[@]}"; do dim "   $b"; done
+    if ! confirm "Delete these ${#to_delete[@]} branch(es)?" n; then
+      info "Kept all ${#branches[@]} branch(es) in this stage."
+      continue
+    fi
+  fi
+  delete_branches "${to_delete[@]}"
 done
 
 echo
+if $DRY_RUN; then
+  info "Dry run — no branches deleted." "🧪"
+  exit 0
+fi
 stat "deleted" "$deleted"
-[[ $skipped -gt 0 ]] && stat "kept/skipped" "$skipped"
+[[ $failed -gt 0 ]] && stat "failed" "$failed"
+if [[ -n "$RESTORE_FILE" ]]; then
+  info "Restore file: $(tildify "$RESTORE_FILE")"
+  dim "   Undo with: bash $(tildify "$RESTORE_FILE")"
+fi
 success "Done." "🎉"

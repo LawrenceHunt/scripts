@@ -33,7 +33,7 @@ falls back to plain bash, so no tool ever hard-fails for want of it.
 | Command           | Does                                                                     |
 | ----------------- | ------------------------------------------------------------------------ |
 | `scripts`         | Lists every tool here with what it does, and runs one from a menu        |
-| `gprune`          | Prunes local git branches whose remote branch has been deleted           |
+| `gprune`          | Prunes local git branches in stages, from merged work to abandoned work  |
 | `gsw`             | Switches git branches with a fuzzy finder, most recent first             |
 | `portkill` (`pk`) | Shows what is listening on your ports and kills it                       |
 | `space`           | Shows what is using disk space, biggest first, and deletes from a menu   |
@@ -53,16 +53,31 @@ falls back to plain bash, so no tool ever hard-fails for want of it.
 
 ### gprune
 
-Fetches with `--prune`, finds local branches whose upstream is gone, and lists each
-with its last commit before deleting anything. Branches that `git branch -d` refuses
-are checked properly: if every commit is reachable from another ref, or the branch was
-squash-merged into the default branch, it is deleted with a note. Anything genuinely
-unmerged is shown commit by commit and needs explicit consent.
+Fetches with `--prune`, then sorts every local branch into stages by how safe it is
+to delete, and shows each stage as a checklist. Each branch appears in the first stage
+it matches:
+
+1. Remote deleted, and every change already in the default branch
+2. Merged into the default branch (directly or squashed)
+3. PR merged, but some commits aren't in the default branch
+4. PR closed without merging
+5. No pull request
+
+Stages 1–3 start ticked and 4–5 start unticked. Each row shows the PR number and,
+from stage 3 on, how many commits exist only on that branch. Press Enter to confirm
+the ticked branches, then answer the y/N prompt; Esc skips a stage. The current
+branch, the default branch, branches checked out in a worktree and branches with an
+open PR are never shown. PR state comes from `gh`; without it, stages 3 and 4 fold
+into stage 5.
+
+Before deleting, each branch is written to a restore file in
+`~/.local/state/scripts/gprune/`; run it with `bash` to recreate the branches while
+git still has the commits.
 
 ```sh
-gprune            # list stale branches, then choose what to delete
-gprune --dry-run  # list only
-gprune --yes      # delete all stale branches without prompting
+gprune            # work through the stages
+gprune --dry-run  # list every stage, delete nothing
+gprune --yes      # delete stages 1–2 (already merged) without prompting, skip the rest
 ```
 
 ### scripts (the tool menu)

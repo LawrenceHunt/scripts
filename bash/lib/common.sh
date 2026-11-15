@@ -235,11 +235,18 @@ filter_menu() {
   return 0
 }
 
-# multi_select "prompt" label1 label2 ... — pick any number of items.
-# With gum: a checklist (space toggles, a selects all, Enter confirms). Without
-# gum: a y/N confirm per item. Sets the global array MULTI_SELECTED to the
-# chosen 0-based indexes (empty if nothing chosen, cancelled or no terminal).
+# multi_select [--checked] "prompt" label1 label2 ... — pick any number of items.
+# With gum: a checklist (space toggles, a selects all, Enter confirms, Esc
+# cancels, Ctrl-C exits). Without gum: a y/N confirm per item. --checked starts
+# every item ticked (and makes y the fallback's default). Sets the global array
+# MULTI_SELECTED to the chosen 0-based indexes (empty if nothing chosen,
+# cancelled or no terminal).
 multi_select() {
+  local checked=false
+  if [[ "${1:-}" == --checked ]]; then
+    checked=true
+    shift
+  fi
   local prompt="$1"
   shift
   local options=("$@")
@@ -249,11 +256,22 @@ multi_select() {
   _tty_ok || return 0
 
   if $HAVE_GUM; then
+    # Show every item when it fits, leaving room for the header and help line.
+    local height=${#options[@]} max_height
+    max_height=$(($(tput lines 2>/dev/null || echo 24) - 6))
+    [[ $max_height -lt 5 ]] && max_height=5
+    [[ $height -gt $max_height ]] && height=$max_height
+    local preselect=()
+    $checked && preselect=(--selected '*')
     # As in menu(): items go in through the pipe; gum reads keys from /dev/tty.
-    local chosen
+    local chosen rc=0
     chosen="$(printf '%s\n' "${options[@]}" |
-      gum choose --no-limit --header "$prompt" \
-        --cursor '❯ ' --selected-prefix '✓ ' --unselected-prefix '  ')" || return 0
+      gum choose --no-limit --header "$prompt" --height "$height" \
+        ${preselect[@]+"${preselect[@]}"} \
+        --cursor '❯ ' --selected-prefix '✓ ' --unselected-prefix '  ')" || rc=$?
+    # Ctrl-C stops the whole tool, as it does in menu(); Esc just cancels this list.
+    [[ $rc -eq 130 ]] && exit 130
+    [[ $rc -ne 0 ]] && return 0
     while IFS= read -r choice; do
       [[ -z "$choice" ]] && continue
       for i in "${!options[@]}"; do
@@ -266,9 +284,11 @@ multi_select() {
     return 0
   fi
 
+  local def=n
+  $checked && def=y
   printf '%s❓ %s%s\n' "$C_YELLOW" "$C_RESET" "$prompt"
   for i in "${!options[@]}"; do
-    confirm "  ${options[$i]}?" n </dev/tty && MULTI_SELECTED+=("$i")
+    confirm "  ${options[$i]}?" "$def" </dev/tty && MULTI_SELECTED+=("$i")
   done
   return 0
 }

@@ -26,7 +26,7 @@ bash/
     common.sh          # colours, emojis, spinners, prompts, output helpers
     summary.sh         # source | summarise [| speak] plumbing for *-summary tools
   git/
-    gprune.sh          # prune local branches whose remote is gone
+    gprune.sh          # prune local branches in stages, merged to abandoned
     gsw.sh             # fuzzy branch switcher, most recent first
   net/
     portkill.sh        # inspect listening ports and kill what holds them (alias: pk)
