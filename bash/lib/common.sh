@@ -236,7 +236,7 @@ filter_menu() {
 }
 
 # multi_select [--checked] "prompt" label1 label2 ... — pick any number of items.
-# With gum: a checklist (space toggles, a selects all, Enter confirms, Esc
+# With gum: a checklist (x or Tab toggles, a toggles all, Enter confirms, Esc
 # cancels, Ctrl-C exits). Without gum: a y/N confirm per item. --checked starts
 # every item ticked (and makes y the fallback's default). Sets the global array
 # MULTI_SELECTED to the chosen 0-based indexes (empty if nothing chosen,

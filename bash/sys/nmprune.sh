@@ -193,7 +193,7 @@ if $ASSUME_YES; then
   chosen=("${!paths[@]}")
 else
   printf '\n'
-  multi_select "Select folders to remove (space toggles, a = all, Enter confirms)" "${labels[@]}"
+  multi_select "Select folders to remove (x toggles, a toggles all, Enter confirms)" "${labels[@]}"
   chosen=(${MULTI_SELECTED[@]+"${MULTI_SELECTED[@]}"})
 fi
 

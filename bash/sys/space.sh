@@ -237,7 +237,7 @@ while :; do
       "📂 Reveal this folder in Finder") open "$dir" ;;
       "🗑  Delete items here…")
         entry_labels=("${labels[@]:${#actions[@]}}")
-        multi_select "Select items to remove from $(tildify "$dir") (space toggles, Enter confirms)" \
+        multi_select "Select items to remove from $(tildify "$dir") (x toggles, a toggles all, Enter confirms)" \
           "${entry_labels[@]}"
         args=()
         for i in ${MULTI_SELECTED[@]+"${MULTI_SELECTED[@]}"}; do

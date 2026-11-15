@@ -116,7 +116,7 @@ ${C_BOLD}Stages${C_RESET} (each branch appears in the first one it matches):
   4. PR closed without merging          ${C_DIM}starts unticked${C_RESET}
   5. No pull request                    ${C_DIM}starts unticked${C_RESET}
 
-  Each stage is a checklist: space toggles, Enter then asks to delete the ticked
+  Each stage is a checklist: x toggles, Enter then asks to delete the ticked
   branches, Esc skips the stage, Ctrl-C stops. Stages 3–4 need the gh CLI;
   without it those branches go in stage 5.
 
@@ -366,7 +366,7 @@ for ((stage = 1; stage <= STAGE_COUNT; stage++)); do
     checked=()
     stage_checked "$stage" && checked=(--checked)
     multi_select ${checked[@]+"${checked[@]}"} \
-      "Space toggles, a = all, Enter to confirm, Esc skips this stage" "${labels[@]}"
+      "x toggles, a toggles all, Enter to confirm, Esc skips this stage" "${labels[@]}"
     for i in ${MULTI_SELECTED[@]+"${MULTI_SELECTED[@]}"}; do
       to_delete+=("${branches[$i]}")
     done
