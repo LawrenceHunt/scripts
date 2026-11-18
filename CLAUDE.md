@@ -27,6 +27,7 @@ bash/
     summary.sh         # source | summarise [| speak] plumbing for *-summary tools
   git/
     gprune.sh          # prune local branches in stages, merged to abandoned
+    gb.sh              # branch overview (age, vs main, upstream) with ↑/↓ switch
     gsw.sh             # fuzzy branch switcher, most recent first
   net/
     portkill.sh        # inspect listening ports and kill what holds them (alias: pk)
